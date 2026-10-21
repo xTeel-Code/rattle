@@ -144,7 +144,7 @@ pub fn deletable_folder(
     if let Some(dir) = config.scan_dirs.iter().find(|d| covers(&expand_tilde(d))) {
         return Err(format!("refusing to delete {}: it is or contains scan folder {dir}", path.display()));
     }
-    if registry.parent().is_some_and(|dir| covers(dir)) {
+    if registry.parent().is_some_and(covers) {
         return Err(format!("refusing to delete {}: it contains Rattle's own data", path.display()));
     }
     let nested: Vec<&str> = store

@@ -356,7 +356,8 @@ impl App {
                 KeyCode::Enter => {
                     let name = input.trim().to_string();
                     if let Err(e) = templates::validate_name(&name) {
-                        return Ok(self.set_status(e, true));
+                        self.set_status(e, true);
+                        return Ok(());
                     }
                     let parent = parent.clone();
                     let templates = Config::load(&config::path_for(&self.file))
