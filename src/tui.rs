@@ -36,6 +36,7 @@ const KEYS: &[(&str, &str)] = &[
     ("s", "scan folders from config.toml"),
     ("e", "open in editor (config, $VISUAL, $EDITOR)"),
     ("c", "edit config.toml (reloads & rescans)"),
+    ("X", "remove entries whose folder is gone"),
     ("?", "toggle this help"),
     ("q / Esc", "quit"),
 ];
@@ -50,6 +51,7 @@ enum Mode {
     Filter,
     Add(String),
     ConfirmDelete,
+    ConfirmPrune,
     Help,
 }
 
@@ -179,6 +181,15 @@ impl App {
                 }
                 self.mode = Mode::Normal;
             }
+            Mode::ConfirmPrune => {
+                if matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y')) {
+                    let gone = self.store.prune_missing();
+                    self.save();
+                    self.refilter();
+                    self.set_status(format!("removed {} missing project(s)", gone.len()), false);
+                }
+                self.mode = Mode::Normal;
+            }
             Mode::Add(input) => match key.code {
                 KeyCode::Esc => self.mode = Mode::Normal,
                 KeyCode::Backspace => {
@@ -242,6 +253,13 @@ impl App {
                 }
             }
             KeyCode::Char('c') => self.edit_config(term)?,
+            KeyCode::Char('X') => {
+                if self.store.missing().is_empty() {
+                    self.set_status("no missing projects", false);
+                } else {
+                    self.mode = Mode::ConfirmPrune;
+                }
+            }
             KeyCode::Enter => {
                 if let Some(i) = self.selected() {
                     self.chosen = Some(self.store.projects[i].path.clone());
@@ -303,7 +321,8 @@ impl App {
             self.save();
         }
         self.refilter();
-        if quiet && report.added.is_empty() && report.warnings.is_empty() {
+        let missing = self.store.missing().len();
+        if quiet && report.added.is_empty() && report.warnings.is_empty() && missing == 0 {
             return;
         }
         let mut msg = format!(
@@ -312,6 +331,9 @@ impl App {
             report.added.len(),
             report.already
         );
+        if missing > 0 {
+            msg.push_str(&format!(" · {missing} missing, press X to remove"));
+        }
         if let Some(first) = report.warnings.first() {
             msg.push_str(&format!(" — {} warning(s): {first}", report.warnings.len()));
         }
@@ -416,6 +438,23 @@ impl App {
                         Line::from("Files on disk are kept.  [y] yes  [any] no".dark_gray()),
                     ])
                     .block(Block::bordered().title(" Delete ").red()),
+                    area,
+                );
+            }
+            Mode::ConfirmPrune => {
+                const SHOWN: usize = 8;
+                let missing = self.store.missing();
+                let mut lines =
+                    vec![Line::from(format!("Remove {} missing project(s) from Rattle?", missing.len()))];
+                lines.extend(missing.iter().take(SHOWN).map(|p| Line::from(format!("  {}", p.name)).dark_gray()));
+                if missing.len() > SHOWN {
+                    lines.push(Line::from(format!("  … and {} more", missing.len() - SHOWN)).dark_gray());
+                }
+                lines.push(Line::from("Only entries are removed.  [y] yes  [any] no".dark_gray()));
+                let area = popup(f.area(), 50, lines.len() as u16 + 2);
+                f.render_widget(Clear, area);
+                f.render_widget(
+                    Paragraph::new(lines).block(Block::bordered().title(" Remove missing ").red()),
                     area,
                 );
             }

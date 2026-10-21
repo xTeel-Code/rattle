@@ -22,6 +22,7 @@ delete\t- will delete project of your choosing (req. projectName)
 scan\t- will register every project found in your scan folders
 \t  rattle scan [-n | --dry-run] [-d | --depth N] [folder...]
 \t  (folders default to scan_dirs, depth to max_depth in ~/.rattle/config.toml)
+prune\t- removes entries whose folder no longer exists (rattle prune [-n | --dry-run])
 config\t- opens config.toml in $VISUAL / $EDITOR (`rattle config path` prints its path)
 
 In the TUI, Enter prints the selected path on exit, so `cd \"$(rattle)\"` works.
@@ -40,6 +41,7 @@ fn main() -> ExitCode {
         Some("create") | Some("add") => create(&file, args.get(1)),
         Some("delete") | Some("remove") | Some("rm") => delete(&file, args.get(1)),
         Some("scan") => scan(&file, &args[1..]),
+        Some("prune") => prune(&file, &args[1..]),
         Some("config") => edit_config(&file, args.get(1).map(String::as_str)),
         Some("tui") => tui::run(&file),
         // The TUI draws on stderr, so stdout may be captured by `$(rattle)`.
@@ -156,7 +158,49 @@ fn scan(file: &Path, args: &[String]) -> Result<()> {
     }
     let verb = if dry_run { "Would add" } else { "Added" };
     println!("{verb} {} project(s), {} already registered", report.added.len(), report.already);
+
+    // Offer, never force, to drop entries whose folder is gone.
+    let missing: Vec<String> = store.missing().iter().map(|p| p.name.clone()).collect();
+    if !missing.is_empty() {
+        println!("{} registered project(s) no longer exist: {}", missing.len(), missing.join(", "));
+        if !dry_run && io::stdin().is_terminal() {
+            if confirm("Remove them from Rattle? (folders are already gone) [y/N] ")? {
+                let gone = store.prune_missing();
+                store.save(file)?;
+                println!("Removed {} entr{}", gone.len(), if gone.len() == 1 { "y" } else { "ies" });
+            }
+        } else {
+            println!("Run `rattle prune` to remove them.");
+        }
+    }
     Ok(())
+}
+
+fn prune(file: &Path, args: &[String]) -> Result<()> {
+    let dry_run = match args.first().map(String::as_str) {
+        None => false,
+        Some("-n") | Some("--dry-run") => true,
+        Some(other) => return Err(format!("unknown prune option: {other}").into()),
+    };
+    let mut store = Store::load(file)?;
+    let gone: Vec<_> = if dry_run {
+        store.missing().into_iter().cloned().collect()
+    } else {
+        store.prune_missing()
+    };
+    for p in &gone {
+        println!(" - {}  {}", p.name, p.path);
+    }
+    if !gone.is_empty() && !dry_run {
+        store.save(file)?;
+    }
+    let verb = if dry_run { "Would remove" } else { "Removed" };
+    println!("{verb} {} missing project(s)", gone.len());
+    Ok(())
+}
+
+fn confirm(msg: &str) -> io::Result<bool> {
+    Ok(matches!(prompt(msg)?.as_str(), "y" | "Y" | "yes"))
 }
 
 fn edit_config(file: &Path, arg: Option<&str>) -> Result<()> {
