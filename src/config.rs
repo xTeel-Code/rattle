@@ -49,6 +49,34 @@ pub const DEFAULT_IGNORE: &[&str] = &[
 
 pub const DEFAULT_MAX_DEPTH: usize = 3;
 
+/// What deleting a project may do to its folder (`delete_files` setting).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DeleteFiles {
+    /// Only registry entries are ever removed.
+    #[default]
+    Off,
+    /// Folders are moved to the Trash.
+    Trash,
+    /// Folders are deleted for good, after typing the project name.
+    Permanent,
+}
+
+impl DeleteFiles {
+    pub const ALL: [Self; 3] = [Self::Off, Self::Trash, Self::Permanent];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Trash => "trash",
+            Self::Permanent => "permanent",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|m| m.as_str() == s)
+    }
+}
+
 const TEMPLATE: &str = "\
 # Folders `rattle scan` searches for projects, e.g. [\"~/code\", \"~/work\"].
 scan_dirs = []
@@ -64,6 +92,11 @@ auto_scan = true
 # Defaults to $VISUAL, then $EDITOR, then vi. GUI editors (zed, code, cursor,
 # subl, …) get --wait automatically when editing this file, so \"zed\" is enough.
 # editor = \"hx\"
+
+# What deleting a project's folder (`D` in the TUI, `rattle delete --files`) does:
+# \"off\" never touches files, \"trash\" moves the folder to the Trash,
+# \"permanent\" deletes it for good after you type the project name.
+delete_files = \"off\"
 
 # Uncomment to override the defaults shown here.
 # A folder counts as a project if it contains any of these.
@@ -83,6 +116,7 @@ pub struct Config {
     pub ignore: Vec<String>,
     /// Overrides `$VISUAL` / `$EDITOR` when set.
     pub editor: Option<String>,
+    pub delete_files: DeleteFiles,
 }
 
 impl Default for Config {
@@ -94,6 +128,7 @@ impl Default for Config {
             markers: DEFAULT_MARKERS.iter().map(|m| m.to_string()).collect(),
             ignore: DEFAULT_IGNORE.iter().map(|m| m.to_string()).collect(),
             editor: None,
+            delete_files: DeleteFiles::Off,
         }
     }
 }
@@ -145,6 +180,10 @@ impl Config {
                 "editor" => {
                     let editor = unquote(&value);
                     config.editor = (!editor.trim().is_empty()).then_some(editor);
+                }
+                "delete_files" => {
+                    // Anything unrecognised stays "off": never delete files by accident.
+                    config.delete_files = DeleteFiles::parse(&unquote(&value)).unwrap_or_default();
                 }
                 "markers" => config.markers = parse_list(&value),
                 "ignore" => config.ignore = parse_list(&value),
@@ -231,6 +270,15 @@ mod tests {
         assert_eq!(Config::parse("editor = \"code -w\"\n").editor.as_deref(), Some("code -w"));
         assert_eq!(Config::parse("editor = \"\"\n").editor, None);
         assert_eq!(Config::parse("# editor = \"hx\"\n").editor, None);
+    }
+
+    #[test]
+    fn delete_files_defaults_to_off_on_bad_values() {
+        let parse = |s: &str| Config::parse(&format!("delete_files = {s}\n")).delete_files;
+        assert_eq!(parse("\"trash\""), DeleteFiles::Trash);
+        assert_eq!(parse("\"permanent\""), DeleteFiles::Permanent);
+        assert_eq!(parse("\"yes\""), DeleteFiles::Off);
+        assert_eq!(parse("true"), DeleteFiles::Off);
     }
 
     #[test]

@@ -7,7 +7,7 @@ use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use config::Config;
+use config::{Config, DeleteFiles};
 use store::Store;
 
 const HELP: &str = "\
@@ -19,6 +19,7 @@ help\t- shows this message
 show\t- will show your projects
 create\t- will register a project in folder of your choosing (req. filePath)
 delete\t- will delete project of your choosing (req. projectName)
+\t  rattle delete <name> --files also deletes the folder (needs delete_files in config)
 scan\t- will register every project found in your scan folders
 \t  rattle scan [-n | --dry-run] [-d | --depth N] [folder...]
 \t  (folders default to scan_dirs, depth to max_depth in ~/.rattle/config.toml)
@@ -39,7 +40,7 @@ fn main() -> ExitCode {
     let result = match args.first().map(String::as_str) {
         Some("show") | Some("list") | Some("ls") => show(&file),
         Some("create") | Some("add") => create(&file, args.get(1)),
-        Some("delete") | Some("remove") | Some("rm") => delete(&file, args.get(1)),
+        Some("delete") | Some("remove") | Some("rm") => delete(&file, &args[1..]),
         Some("scan") => scan(&file, &args[1..]),
         Some("prune") => prune(&file, &args[1..]),
         Some("config") => edit_config(&file, args.get(1).map(String::as_str)),
@@ -95,11 +96,15 @@ fn create(file: &Path, arg: Option<&String>) -> Result<()> {
     Ok(())
 }
 
-fn delete(file: &Path, arg: Option<&String>) -> Result<()> {
-    let name = match arg {
+fn delete(file: &Path, args: &[String]) -> Result<()> {
+    let with_files = args.iter().any(|a| a == "--files" || a == "-f");
+    let name = match args.iter().find(|a| !a.starts_with('-')) {
         Some(a) => a.clone(),
         None => prompt("Project Name: ")?,
     };
+    if let Some(bad) = args.iter().find(|a| a.starts_with('-') && *a != "--files" && *a != "-f") {
+        return Err(format!("unknown delete option: {bad}").into());
+    }
     let mut store = Store::load(file)?;
     // Accept either the project name or its index from `rattle show`.
     let name = match name.parse::<usize>() {
@@ -108,9 +113,49 @@ fn delete(file: &Path, arg: Option<&String>) -> Result<()> {
         }
         _ => name,
     };
+    if with_files {
+        return delete_with_files(file, store, &name);
+    }
     let removed = store.remove(&name).ok_or_else(|| format!("no project named '{name}'"))?;
     store.save(file)?;
     println!("Removed '{}' (files at {} were left untouched)", removed.name, removed.path);
+    Ok(())
+}
+
+/// `rattle delete <name> --files`: removes the entry and the folder itself,
+/// as allowed by `delete_files`, after an interactive confirmation.
+fn delete_with_files(file: &Path, mut store: Store, name: &str) -> Result<()> {
+    let config_file = config::path_for(file);
+    let config = Config::load(&config_file)?;
+    if config.delete_files == DeleteFiles::Off {
+        return Err(format!(
+            "deleting folders is turned off; set delete_files = \"trash\" (or \"permanent\") in {}",
+            config_file.display()
+        )
+        .into());
+    }
+    let project = store.find(name).cloned().ok_or_else(|| format!("no project named '{name}'"))?;
+    let path = ops::deletable_folder(&project, &store, &config, file)?;
+    if !io::stdin().is_terminal() {
+        return Err("deleting a folder needs an interactive terminal to confirm".into());
+    }
+
+    let confirmed = match config.delete_files {
+        DeleteFiles::Trash => confirm(&format!("Move {} to the Trash? [y/N] ", path.display()))?,
+        _ => {
+            println!("This permanently deletes {} and everything in it.", path.display());
+            prompt(&format!("Type '{name}' to confirm: "))? == name
+        }
+    };
+    if !confirmed {
+        println!("Cancelled; nothing was deleted.");
+        return Ok(());
+    }
+    ops::delete_folder(&path, config.delete_files)?;
+    store.remove(name);
+    store.save(file)?;
+    let how = if config.delete_files == DeleteFiles::Trash { "moved to the Trash" } else { "deleted" };
+    println!("Removed '{name}'; {} was {how}", path.display());
     Ok(())
 }
 

@@ -19,7 +19,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 
-use crate::config::{self, Config};
+use crate::config::{self, Config, DeleteFiles};
 use crate::ops;
 use crate::store::Store;
 
@@ -33,6 +33,7 @@ const KEYS: &[(&str, &str)] = &[
     ("/", "filter"),
     ("a", "add project folder"),
     ("d", "delete entry (files are kept)"),
+    ("D", "delete entry and folder (delete_files)"),
     ("s", "scan folders from config.toml"),
     ("e", "open in editor (config, $VISUAL, $EDITOR)"),
     ("c", "edit config.toml (reloads & rescans)"),
@@ -52,6 +53,9 @@ enum Mode {
     Add(String),
     ConfirmDelete,
     ConfirmPrune,
+    /// Deleting the selected project's folder; `input` is the typed name
+    /// (only needed for permanent deletion).
+    ConfirmDeleteFiles { path: PathBuf, how: DeleteFiles, input: String },
     Help,
 }
 
@@ -168,6 +172,7 @@ impl App {
             self.quit = true;
             return Ok(());
         }
+        let selected_name = self.selected().map(|i| self.store.projects[i].name.clone());
         match &mut self.mode {
             Mode::Help => self.mode = Mode::Normal,
             Mode::ConfirmDelete => {
@@ -189,6 +194,30 @@ impl App {
                     self.set_status(format!("removed {} missing project(s)", gone.len()), false);
                 }
                 self.mode = Mode::Normal;
+            }
+            Mode::ConfirmDeleteFiles { path, how, input } => {
+                let confirmed = match (*how, key.code) {
+                    (DeleteFiles::Trash, KeyCode::Char('y' | 'Y')) => true,
+                    (DeleteFiles::Permanent, KeyCode::Char(c)) => {
+                        input.push(c);
+                        return Ok(());
+                    }
+                    (DeleteFiles::Permanent, KeyCode::Backspace) => {
+                        input.pop();
+                        return Ok(());
+                    }
+                    (DeleteFiles::Permanent, KeyCode::Enter) => {
+                        selected_name.as_deref() == Some(input.as_str())
+                    }
+                    _ => false,
+                };
+                let (path, how) = (path.clone(), *how);
+                self.mode = Mode::Normal;
+                if confirmed {
+                    self.delete_files(&path, how);
+                } else {
+                    self.set_status("cancelled; nothing was deleted", false);
+                }
             }
             Mode::Add(input) => match key.code {
                 KeyCode::Esc => self.mode = Mode::Normal,
@@ -253,6 +282,7 @@ impl App {
                 }
             }
             KeyCode::Char('c') => self.edit_config(term)?,
+            KeyCode::Char('D') => self.start_delete_files(),
             KeyCode::Char('X') => {
                 if self.store.missing().is_empty() {
                     self.set_status("no missing projects", false);
@@ -285,6 +315,40 @@ impl App {
         self.refilter();
         self.list.select(self.visible.iter().position(|&i| self.store.projects[i].name == name));
         self.set_status(format!("added '{name}'"), false);
+    }
+
+    /// `D`: checks that the selected folder may be deleted, then asks to confirm.
+    fn start_delete_files(&mut self) {
+        let Some(i) = self.selected() else { return };
+        let config_file = config::path_for(&self.file);
+        let config = match Config::load(&config_file) {
+            Ok(c) => c,
+            Err(e) => return self.set_status(format!("cannot read config: {e}"), true),
+        };
+        if config.delete_files == DeleteFiles::Off {
+            return self.set_status(
+                "deleting folders is off; set delete_files = \"trash\" in config (c)",
+                true,
+            );
+        }
+        match ops::deletable_folder(&self.store.projects[i], &self.store, &config, &self.file) {
+            Ok(path) => {
+                self.mode = Mode::ConfirmDeleteFiles { path, how: config.delete_files, input: String::new() }
+            }
+            Err(e) => self.set_status(e, true),
+        }
+    }
+
+    fn delete_files(&mut self, path: &Path, how: DeleteFiles) {
+        let Some(i) = self.selected() else { return };
+        if let Err(e) = ops::delete_folder(path, how) {
+            return self.set_status(e, true);
+        }
+        let p = self.store.projects.remove(i);
+        self.save();
+        self.refilter();
+        let what = if how == DeleteFiles::Trash { "moved to the Trash" } else { "deleted" };
+        self.set_status(format!("removed '{}'; folder {what}", p.name), false);
     }
 
     /// Runs a scan before the first key press when `auto_scan` is on and
@@ -441,6 +505,34 @@ impl App {
                     area,
                 );
             }
+            Mode::ConfirmDeleteFiles { path, how, input } => {
+                let name = self.selected().map(|i| self.store.projects[i].name.as_str()).unwrap_or("");
+                let path = path.display().to_string();
+                let lines = match how {
+                    DeleteFiles::Permanent => vec![
+                        Line::from("Permanently delete this folder and everything in it?"),
+                        Line::from(path).bold(),
+                        Line::from("This cannot be undone.".red().bold()),
+                        Line::from(format!("Type '{name}' and press Enter (anything else cancels):")),
+                        Line::from(format!("> {input}")),
+                    ],
+                    _ => vec![
+                        Line::from("Move this folder to the Trash?"),
+                        Line::from(path).bold(),
+                        Line::from(format!("'{name}' is also removed from Rattle.")),
+                        Line::from("[y] yes  [any] no".dark_gray()),
+                    ],
+                };
+                let width = popup(f.area(), 70, 0).width;
+                let area = popup(f.area(), 70, wrapped_height(&lines, width));
+                f.render_widget(Clear, area);
+                f.render_widget(
+                    Paragraph::new(lines)
+                        .wrap(Wrap { trim: false })
+                        .block(Block::bordered().title(" Delete folder ").red()),
+                    area,
+                );
+            }
             Mode::ConfirmPrune => {
                 const SHOWN: usize = 8;
                 let missing = self.store.missing();
@@ -543,6 +635,13 @@ impl App {
         };
         f.render_widget(line, area);
     }
+}
+
+/// Rows a bordered paragraph of `lines` needs at `width` columns, wrapping included.
+fn wrapped_height(lines: &[Line], width: u16) -> u16 {
+    let inner = usize::from(width.saturating_sub(2)).max(1);
+    let rows: usize = lines.iter().map(|l| l.width().div_ceil(inner).max(1)).sum();
+    u16::try_from(rows + 2).unwrap_or(u16::MAX)
 }
 
 /// A rectangle centred in `area`, `percent_x` wide and `height` rows tall.
