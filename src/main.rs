@@ -1,4 +1,5 @@
 mod config;
+mod deps;
 mod ops;
 mod store;
 mod templates;
@@ -27,6 +28,9 @@ scan\t- will register every project found in your scan folders
 prune\t- removes entries whose folder no longer exists (rattle prune [-n | --dry-run])
 new\t- creates a project from a template and adds it
 \t  rattle new <name> [-t | --template T] [--in folder]   (rattle new --list shows templates)
+deps\t- lists, adds or removes a project's dependencies with its package manager
+\t  rattle deps [project] [list | add [--dev] <pkg>... | remove <pkg>...]
+\t  (project defaults to the current folder; cargo, npm/pnpm/yarn/bun, uv/poetry, go)
 config\t- opens config.toml in $VISUAL / $EDITOR (`rattle config path` prints its path)
 
 In the TUI, Enter prints the selected path on exit, so `cd \"$(rattle)\"` works.
@@ -47,6 +51,7 @@ fn main() -> ExitCode {
         Some("scan") => scan(&file, &args[1..]),
         Some("prune") => prune(&file, &args[1..]),
         Some("new") => new_project(&file, &args[1..]),
+        Some("deps") => deps_command(&file, &args[1..]),
         Some("config") => edit_config(&file, args.get(1).map(String::as_str)),
         Some("tui") => tui::run(&file),
         // The TUI draws on stderr, so stdout may be captured by `$(rattle)`.
@@ -298,6 +303,76 @@ fn new_project(file: &Path, args: &[String]) -> Result<()> {
     let project = templates::create(&mut store, &template, &name, &parent)?;
     store.save(file)?;
     println!("Created and added '{}' -> {}", project.name, project.path);
+    Ok(())
+}
+
+/// `rattle deps [project] [list | add [--dev] <pkg>... | remove <pkg>...]`
+fn deps_command(file: &Path, args: &[String]) -> Result<()> {
+    const ACTIONS: &[&str] = &["list", "add", "remove", "rm"];
+    // The project is optional: without one, the current folder is used.
+    let (target, rest) = match args.first() {
+        Some(a) if !ACTIONS.contains(&a.as_str()) => (Some(a.as_str()), &args[1..]),
+        _ => (None, args),
+    };
+    let dir = match target {
+        None | Some(".") => std::env::current_dir()?,
+        Some(t) => {
+            let store = Store::load(file)?;
+            let by_index = t.parse::<usize>().ok().and_then(|i| store.projects.get(i));
+            match store.find(t).or(by_index) {
+                Some(p) => PathBuf::from(&p.path),
+                None if Path::new(t).is_dir() => PathBuf::from(t),
+                None => return Err(format!("no project or folder named '{t}'").into()),
+            }
+        }
+    };
+    let manager = deps::detect(&dir).ok_or_else(|| {
+        format!("no supported manifest in {} (Cargo.toml, package.json, pyproject.toml, go.mod)", dir.display())
+    })?;
+
+    let action = rest.first().map(String::as_str).unwrap_or("list");
+    let dev = rest.iter().any(|a| a == "--dev" || a == "-D");
+    let packages: Vec<String> = rest.iter().skip(1).filter(|a| !a.starts_with('-')).cloned().collect();
+    match action {
+        "list" => {
+            let deps = deps::list(&dir, manager)?;
+            let noun = if deps.len() == 1 { "dependency" } else { "dependencies" };
+            println!("{} · {} ({}) · {} {noun}", dir.display(), manager.name(), manager.manifest(), deps.len());
+            let width = deps.iter().map(|d| d.name.len()).max().unwrap_or(0);
+            for d in deps {
+                let group = d.group.label();
+                let group = if group.is_empty() { String::new() } else { format!("  [{group}]") };
+                println!(" {:<width$}  {}{group}", d.name, d.spec);
+            }
+            return Ok(());
+        }
+        "add" | "remove" | "rm" if packages.is_empty() => {
+            return Err(format!("usage: rattle deps [project] {action} <package>...").into());
+        }
+        "add" => {
+            run_visible(deps::add_command(manager, &dir, &packages, dev))?;
+        }
+        _ => {
+            let listed = deps::list(&dir, manager).unwrap_or_default();
+            for name in &packages {
+                // Remove from the group it is listed in (dev, build, optional, …).
+                let group = listed.iter().find(|d| d.name == *name).map(|d| d.group.clone());
+                let group = group.unwrap_or(if dev { deps::Group::Dev } else { deps::Group::Normal });
+                run_visible(deps::remove_command(manager, &dir, name, &group))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Runs a package-manager command with its output shown, for the CLI.
+fn run_visible(mut cmd: std::process::Command) -> Result<()> {
+    println!("$ {}", deps::describe(&cmd));
+    let program = cmd.get_program().to_string_lossy().into_owned();
+    let status = cmd.status().map_err(|e| format!("could not run {program}: {e}"))?;
+    if !status.success() {
+        return Err(format!("{program} exited with {status}").into());
+    }
     Ok(())
 }
 

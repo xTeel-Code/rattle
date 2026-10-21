@@ -260,7 +260,7 @@ fn home_relative(dir: String) -> String {
 }
 
 /// Drops a trailing `# comment`, ignoring `#` inside quoted strings.
-fn strip_comment(line: &str) -> &str {
+pub(crate) fn strip_comment(line: &str) -> &str {
     let mut in_str = false;
     for (i, c) in line.char_indices() {
         match c {
