@@ -19,7 +19,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 
-use crate::config::Config;
+use crate::config::{self, Config};
 use crate::ops;
 use crate::store::Store;
 
@@ -35,6 +35,7 @@ const KEYS: &[(&str, &str)] = &[
     ("d", "delete entry (files are kept)"),
     ("s", "scan folders from config.toml"),
     ("e", "open in $EDITOR"),
+    ("c", "edit config.toml (reloads & rescans)"),
     ("?", "toggle this help"),
     ("q / Esc", "quit"),
 ];
@@ -236,10 +237,11 @@ impl App {
             }
             KeyCode::Char('e') => {
                 if let Some(i) = self.selected() {
-                    let path = self.store.projects[i].path.clone();
-                    self.open_editor(&path, term)?;
+                    let path = PathBuf::from(&self.store.projects[i].path);
+                    self.open_editor(&path, Path::new("."), term)?;
                 }
             }
+            KeyCode::Char('c') => self.edit_config(term)?,
             KeyCode::Enter => {
                 if let Some(i) = self.selected() {
                     self.chosen = Some(self.store.projects[i].path.clone());
@@ -270,7 +272,7 @@ impl App {
     /// Runs a scan before the first key press when `auto_scan` is on and
     /// scan_dirs are set; stays quiet unless something was found or went wrong.
     fn auto_scan(&mut self, term: &mut Term) -> Result<()> {
-        let config_file = self.file.with_file_name("config.toml");
+        let config_file = config::path_for(&self.file);
         let Ok(config) = Config::load(&config_file) else { return Ok(()) };
         if !config.auto_scan || config.scan_dirs.is_empty() {
             return Ok(());
@@ -283,7 +285,7 @@ impl App {
     }
 
     fn scan(&mut self) {
-        let config_file = self.file.with_file_name("config.toml");
+        let config_file = config::path_for(&self.file);
         let config = match Config::load(&config_file) {
             Ok(c) => c,
             Err(e) => return self.set_status(format!("cannot read config: {e}"), true),
@@ -316,25 +318,55 @@ impl App {
         self.set_status(msg, !report.warnings.is_empty());
     }
 
-    fn open_editor(&mut self, path: &str, term: &mut Term) -> Result<()> {
-        let editor = std::env::var("VISUAL")
-            .or_else(|_| std::env::var("EDITOR"))
-            .unwrap_or_else(|_| "vi".into());
-        let mut parts = editor.split_whitespace();
-        let Some(program) = parts.next() else { return Ok(()) };
-
+    /// Suspends the TUI, runs the editor on `target` inside `dir`, then restores
+    /// the TUI. Returns whether the editor could be started.
+    fn open_editor(&mut self, dir: &Path, target: &Path, term: &mut Term) -> Result<bool> {
+        let (mut cmd, editor) = ops::editor_command(dir, target);
         restore()?;
-        let status = std::process::Command::new(program)
-            .args(parts)
-            .arg(".")
-            .current_dir(path)
-            .status();
+        let status = cmd.status();
         enable_raw_mode()?;
         execute!(io::stderr(), EnterAlternateScreen)?;
         term.clear()?;
 
-        if let Err(e) = status {
-            self.set_status(format!("could not run '{editor}': {e}"), true);
+        match status {
+            Ok(_) => Ok(true),
+            Err(e) => {
+                self.set_status(format!("could not run '{editor}': {e}"), true);
+                Ok(false)
+            }
+        }
+    }
+
+    /// Opens config.toml in the editor, then reloads it and rescans so changes
+    /// (e.g. new scan_dirs) show up immediately.
+    fn edit_config(&mut self, term: &mut Term) -> Result<()> {
+        let config_file = config::path_for(&self.file);
+        // Creates the commented template on first use, so there is something to edit.
+        if let Err(e) = Config::load(&config_file) {
+            self.set_status(format!("cannot create config: {e}"), true);
+            return Ok(());
+        }
+        let dir = config_file.parent().unwrap_or(Path::new(".")).to_path_buf();
+        if !self.open_editor(&dir, &config_file, term)? {
+            return Ok(());
+        }
+
+        let config = match Config::load(&config_file) {
+            Ok(c) => c,
+            Err(e) => {
+                self.set_status(format!("cannot read config: {e}"), true);
+                return Ok(());
+            }
+        };
+        if config.scan_dirs.is_empty() {
+            self.set_status("config reloaded; set scan_dirs to find projects automatically", false);
+        } else if config.auto_scan {
+            self.run_scan(&config, false);
+            if let Some((msg, _)) = &mut self.status {
+                *msg = format!("config reloaded · {msg}");
+            }
+        } else {
+            self.set_status("config reloaded (auto_scan is off; press s to scan)", false);
         }
         Ok(())
     }
@@ -462,7 +494,7 @@ impl App {
                 spans.push(format!(" filter: {} ", self.filter).yellow());
             }
             spans.push(
-                " Enter cd · / filter · a add · d delete · s scan · e edit · ? help · q quit"
+                " Enter cd · / filter · a add · d delete · s scan · e edit · c config · ? help · q quit"
                     .dark_gray(),
             );
             Line::from(spans)

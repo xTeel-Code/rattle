@@ -19,7 +19,7 @@
 
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::store::unquote;
 
@@ -88,6 +88,11 @@ impl Default for Config {
             ignore: DEFAULT_IGNORE.iter().map(|m| m.to_string()).collect(),
         }
     }
+}
+
+/// The config lives next to the registry: `~/.rattle/config.toml` by default.
+pub fn path_for(registry: &Path) -> PathBuf {
+    registry.with_file_name("config.toml")
 }
 
 impl Config {

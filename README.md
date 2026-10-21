@@ -19,6 +19,7 @@ Run `rattle` with no arguments (or `rattle tui`) to open the interactive browser
 | `d` | delete the entry (files on disk are kept) |
 | `s` | scan the `scan_dirs` from `config.toml` |
 | `e` | open the project in `$VISUAL` / `$EDITOR` |
+| `c` | edit `config.toml` in your editor; reloads and rescans when you close it |
 | `?` | key help |
 | `q` / `Esc` | quit |
 
@@ -38,6 +39,7 @@ create  - registers a project folder        (aliases: add)      e.g. rattle crea
 delete  - removes a project entry by name   (aliases: remove, rm) or by its number from `show`
 scan    - registers every project found in your scan folders
           rattle scan [-n | --dry-run] [-d | --depth N] [folder...]
+config  - opens config.toml in $VISUAL / $EDITOR  (`rattle config path` prints its path)
 ```
 Omitted arguments are asked for interactively.
 
@@ -73,6 +75,7 @@ auto_scan = true       # rescan when the TUI opens
 markers = [".git", "Cargo.toml"]
 ignore = ["node_modules", "target"]
 ```
+Edit it with `c` in the TUI or `rattle config` in the shell.
 
 ## Roadmap
 - [x] Made Working MVP

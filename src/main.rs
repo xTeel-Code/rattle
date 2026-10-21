@@ -22,6 +22,7 @@ delete\t- will delete project of your choosing (req. projectName)
 scan\t- will register every project found in your scan folders
 \t  rattle scan [-n | --dry-run] [-d | --depth N] [folder...]
 \t  (folders default to scan_dirs, depth to max_depth in ~/.rattle/config.toml)
+config\t- opens config.toml in $VISUAL / $EDITOR (`rattle config path` prints its path)
 
 In the TUI, Enter prints the selected path on exit, so `cd \"$(rattle)\"` works.
 Arguments that are omitted are asked for interactively.
@@ -39,6 +40,7 @@ fn main() -> ExitCode {
         Some("create") | Some("add") => create(&file, args.get(1)),
         Some("delete") | Some("remove") | Some("rm") => delete(&file, args.get(1)),
         Some("scan") => scan(&file, &args[1..]),
+        Some("config") => edit_config(&file, args.get(1).map(String::as_str)),
         Some("tui") => tui::run(&file),
         // The TUI draws on stderr, so stdout may be captured by `$(rattle)`.
         None if io::stdin().is_terminal() && io::stderr().is_terminal() => tui::run(&file),
@@ -111,7 +113,7 @@ fn delete(file: &Path, arg: Option<&String>) -> Result<()> {
 }
 
 fn scan(file: &Path, args: &[String]) -> Result<()> {
-    let config_file = file.with_file_name("config.toml");
+    let config_file = config::path_for(file);
     let mut config = Config::load(&config_file)?;
 
     let mut dry_run = false;
@@ -154,6 +156,25 @@ fn scan(file: &Path, args: &[String]) -> Result<()> {
     }
     let verb = if dry_run { "Would add" } else { "Added" };
     println!("{verb} {} project(s), {} already registered", report.added.len(), report.already);
+    Ok(())
+}
+
+fn edit_config(file: &Path, arg: Option<&str>) -> Result<()> {
+    let config_file = config::path_for(file);
+    // Creates the commented template on first use.
+    Config::load(&config_file)?;
+    match arg {
+        Some("path") => println!("{}", config_file.display()),
+        None => {
+            let dir = config_file.parent().unwrap_or(Path::new("."));
+            let (mut cmd, editor) = ops::editor_command(dir, &config_file);
+            let status = cmd.status().map_err(|e| format!("could not run '{editor}': {e}"))?;
+            if !status.success() {
+                return Err(format!("'{editor}' exited with {status}").into());
+            }
+        }
+        Some(other) => return Err(format!("unknown config option: {other} (try: rattle config path)").into()),
+    }
     Ok(())
 }
 

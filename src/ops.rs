@@ -3,6 +3,7 @@
 use std::collections::HashSet;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use crate::config::Config;
 use crate::store::{self, Project, Store};
@@ -104,6 +105,20 @@ fn find_projects(dir: &Path, depth: usize, config: &Config, out: &mut Vec<PathBu
 
 fn is_ignored(p: &Path, ignore: &[String]) -> bool {
     p.file_name().is_some_and(|n| ignore.iter().any(|i| n == i.as_str()))
+}
+
+/// Builds the command that opens `target` in `$VISUAL` / `$EDITOR` (default `vi`)
+/// from inside `dir`. Also returns the editor setting, for error messages.
+pub fn editor_command(dir: &Path, target: &Path) -> (Command, String) {
+    let editor = std::env::var("VISUAL")
+        .or_else(|_| std::env::var("EDITOR"))
+        .ok()
+        .filter(|e| !e.trim().is_empty())
+        .unwrap_or_else(|| "vi".into());
+    let mut parts = editor.split_whitespace();
+    let mut cmd = Command::new(parts.next().unwrap_or("vi"));
+    cmd.args(parts).arg(target).current_dir(dir);
+    (cmd, editor)
 }
 
 pub fn expand_tilde(p: &str) -> PathBuf {
