@@ -162,12 +162,13 @@ fn scan(file: &Path, args: &[String]) -> Result<()> {
 fn edit_config(file: &Path, arg: Option<&str>) -> Result<()> {
     let config_file = config::path_for(file);
     // Creates the commented template on first use.
-    Config::load(&config_file)?;
+    let config = Config::load(&config_file)?;
     match arg {
         Some("path") => println!("{}", config_file.display()),
         None => {
             let dir = config_file.parent().unwrap_or(Path::new("."));
-            let (mut cmd, editor) = ops::editor_command(dir, &config_file);
+            let (mut cmd, editor) =
+                ops::editor_command(config.editor.as_deref(), dir, &config_file);
             let status = cmd.status().map_err(|e| format!("could not run '{editor}': {e}"))?;
             if !status.success() {
                 return Err(format!("'{editor}' exited with {status}").into());

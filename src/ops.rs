@@ -107,13 +107,15 @@ fn is_ignored(p: &Path, ignore: &[String]) -> bool {
     p.file_name().is_some_and(|n| ignore.iter().any(|i| n == i.as_str()))
 }
 
-/// Builds the command that opens `target` in `$VISUAL` / `$EDITOR` (default `vi`)
-/// from inside `dir`. Also returns the editor setting, for error messages.
-pub fn editor_command(dir: &Path, target: &Path) -> (Command, String) {
-    let editor = std::env::var("VISUAL")
-        .or_else(|_| std::env::var("EDITOR"))
-        .ok()
-        .filter(|e| !e.trim().is_empty())
+/// Builds the command that opens `target` from inside `dir`, using the
+/// configured editor, else `$VISUAL`, else `$EDITOR`, else `vi`.
+/// Also returns the editor setting, for error messages.
+pub fn editor_command(configured: Option<&str>, dir: &Path, target: &Path) -> (Command, String) {
+    let from_env = |var| std::env::var(var).ok();
+    let editor = [configured.map(str::to_string), from_env("VISUAL"), from_env("EDITOR")]
+        .into_iter()
+        .flatten()
+        .find(|e| !e.trim().is_empty())
         .unwrap_or_else(|| "vi".into());
     let mut parts = editor.split_whitespace();
     let mut cmd = Command::new(parts.next().unwrap_or("vi"));
