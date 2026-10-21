@@ -89,6 +89,20 @@ impl Store {
         let idx = self.projects.iter().position(|p| p.name == name)?;
         Some(self.projects.remove(idx))
     }
+
+    /// Projects whose folder no longer exists.
+    pub fn missing(&self) -> Vec<&Project> {
+        self.projects.iter().filter(|p| !Path::new(&p.path).is_dir()).collect()
+    }
+
+    /// Removes the entries of projects whose folder no longer exists.
+    pub fn prune_missing(&mut self) -> Vec<Project> {
+        let (gone, kept) = std::mem::take(&mut self.projects)
+            .into_iter()
+            .partition(|p| !Path::new(&p.path).is_dir());
+        self.projects = kept;
+        gone
+    }
 }
 
 /// Default registry location: `~/.rattle/projects.toml`.
@@ -150,5 +164,16 @@ mod tests {
         assert!(s.add(p("x", "/y")).is_err());
         assert_eq!(s.remove("x"), Some(p("x", "/x")));
         assert_eq!(s.remove("x"), None);
+    }
+
+    #[test]
+    fn prunes_only_missing_folders() {
+        let here = std::env::temp_dir().display().to_string();
+        let mut s = Store::default();
+        s.add(p("here", &here)).unwrap();
+        s.add(p("gone", "/definitely/not/a/real/folder")).unwrap();
+        assert_eq!(s.missing(), vec![&p("gone", "/definitely/not/a/real/folder")]);
+        assert_eq!(s.prune_missing(), vec![p("gone", "/definitely/not/a/real/folder")]);
+        assert_eq!(s.projects, vec![p("here", &here)]);
     }
 }
