@@ -51,7 +51,7 @@ impl App {
                     area,
                 );
             }
-            Mode::Deps(view) => draw_deps(f, view),
+            Mode::Deps(view) => draw_deps(f, view, self.job.as_ref().map(|j| j.status_line())),
             Mode::Settings(form) => {
                 let area = popup(f.area(), 85, form.height());
                 f.render_widget(Clear, area);
@@ -225,7 +225,9 @@ impl App {
     }
 
     fn draw_footer(&self, f: &mut Frame, area: Rect) {
-        let line = if matches!(self.mode, Mode::Filter) {
+        let line = if let Some(job) = &self.job {
+            Line::from(format!(" {}", job.status_line()).yellow())
+        } else if matches!(self.mode, Mode::Filter) {
             Line::from(vec![
                 " / ".bold().reversed(),
                 Span::raw(format!(" {}", self.filter)),

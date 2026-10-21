@@ -29,8 +29,10 @@ use crate::templates::{self, Template};
 
 mod deps_view;
 mod draw;
+mod job;
 
 use deps_view::{DepsAction, DepsView};
+use job::{Job, JobKind};
 
 type Term = Terminal<CrosstermBackend<Stderr>>;
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -102,6 +104,8 @@ struct App {
     status: Option<(String, bool)>,
     chosen: Option<String>,
     quit: bool,
+    /// A template or package-manager command running in the background.
+    job: Option<Job>,
 }
 
 pub fn run(file: &Path) -> Result<()> {
@@ -116,6 +120,7 @@ pub fn run(file: &Path) -> Result<()> {
         status: None,
         chosen: None,
         quit: false,
+        job: None,
     };
     app.refilter();
 
@@ -166,6 +171,13 @@ impl App {
         let mut enter_guard = Instant::now() + STARTUP_ENTER_GUARD;
         while !self.quit {
             term.draw(|f| self.draw(f))?;
+            // While a job runs, wake up regularly to animate it and notice it finishing.
+            if self.job.is_some() {
+                self.tick_job();
+                if !event::poll(Duration::from_millis(100))? {
+                    continue;
+                }
+            }
             if let Event::Key(key) = event::read()? {
                 if key.kind != KeyEventKind::Press {
                     continue;
@@ -216,7 +228,17 @@ impl App {
     }
 
     fn on_key(&mut self, key: KeyEvent, term: &mut Term) -> Result<()> {
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+        let ctrl_c =
+            key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c');
+        if let Some(job) = &mut self.job {
+            // Only cancelling (or quitting) while something runs in the background.
+            if ctrl_c || key.code == KeyCode::Esc {
+                job.cancel();
+            }
+            self.quit = ctrl_c;
+            return Ok(());
+        }
+        if ctrl_c {
             self.quit = true;
             return Ok(());
         }
@@ -278,7 +300,7 @@ impl App {
             Mode::Deps(view) => match view.on_key(key) {
                 DepsAction::Nothing => {}
                 DepsAction::Close => self.mode = Mode::Normal,
-                DepsAction::Run(cmd) => self.run_deps(cmd, term)?,
+                DepsAction::Run(cmd) => self.run_deps(cmd),
             },
             Mode::NewName { input, parent } => match key.code {
                 KeyCode::Esc => self.mode = Mode::Normal,
@@ -323,7 +345,7 @@ impl App {
                     };
                     let (name, parent) = (name.clone(), parent.clone());
                     self.mode = Mode::Normal;
-                    self.create_project(&name, &template, &parent, term)?;
+                    self.create_project(&name, &template, &parent);
                 }
                 _ => {}
             },
@@ -458,51 +480,94 @@ impl App {
 
     /// Runs a package-manager command for the open dependency view, showing
     /// progress first since installs can take a while, then reloads the list.
-    fn run_deps(&mut self, cmd: std::process::Command, term: &mut Term) -> Result<()> {
-        let what = deps::describe(&cmd);
+    /// Starts a package-manager command for the open dependency view in the
+    /// background; the view reloads when it finishes.
+    fn run_deps(&mut self, cmd: std::process::Command) {
+        let label = deps::describe(&cmd);
+        let message = match Job::spawn(cmd, label.clone(), JobKind::Deps) {
+            Ok(job) => {
+                self.job = Some(job);
+                (format!("running {label}…"), false)
+            }
+            Err(e) => (e, true),
+        };
         if let Mode::Deps(view) = &mut self.mode {
-            view.message = Some((format!("running {what}…"), false));
+            view.message = Some(message);
         }
-        term.draw(|f| self.draw(f))?;
-        let result = deps::run_captured(cmd);
-        if let Mode::Deps(view) = &mut self.mode {
-            view.reload();
-            view.message = Some(match result {
-                Ok(last) => (format!("{what}: {last}"), false),
-                Err(e) => (e, true),
-            });
-        }
-        Ok(())
     }
 
-    /// Runs the template (which may take a while), then registers and selects the project.
-    fn create_project(
-        &mut self,
-        name: &str,
-        template: &Template,
-        parent: &Path,
-        term: &mut Term,
-    ) -> Result<()> {
-        self.set_status(
-            format!("creating '{name}' with template '{}'…", template.name),
-            false,
-        );
-        term.draw(|f| self.draw(f))?;
-        match templates::create(&mut self.store, template, name, parent) {
-            Ok(project) => {
-                self.save();
-                self.filter.clear();
-                self.refilter();
-                self.list.select(
-                    self.visible
-                        .iter()
-                        .position(|&i| self.store.projects[i].name == project.name),
-                );
-                self.set_status(format!("created '{name}' in {}", parent.display()), false);
+    /// Starts the template in the background; the project is registered when it finishes.
+    fn create_project(&mut self, name: &str, template: &Template, parent: &Path) {
+        let prepared = match templates::prepare(&self.store, template, name, parent) {
+            Ok(p) => p,
+            Err(e) => return self.set_status(e, true),
+        };
+        let label = format!("creating '{name}' with template '{}'", template.name);
+        let kind = JobKind::NewProject {
+            name: name.to_string(),
+            template: prepared.template,
+            target: prepared.target,
+        };
+        match Job::spawn(prepared.command, label, kind) {
+            Ok(job) => {
+                self.status = None;
+                self.job = Some(job);
             }
             Err(e) => self.set_status(e, true),
         }
-        Ok(())
+    }
+
+    /// Checks the background job; handles its result once it has finished.
+    fn tick_job(&mut self) {
+        let Some(output) = self.job.as_mut().and_then(Job::poll) else {
+            return;
+        };
+        let job = self.job.take().expect("polled job exists");
+        match job.kind {
+            JobKind::NewProject {
+                name,
+                template,
+                target,
+            } => {
+                if job.cancelled {
+                    let leftover = if target.exists() {
+                        format!("; {} may be partly created", target.display())
+                    } else {
+                        String::new()
+                    };
+                    return self.set_status(format!("cancelled creating '{name}'{leftover}"), true);
+                }
+                match templates::finish(&mut self.store, &template, &target, &output) {
+                    Ok(project) => {
+                        self.save();
+                        self.filter.clear();
+                        self.refilter();
+                        self.list.select(
+                            self.visible
+                                .iter()
+                                .position(|&i| self.store.projects[i].name == project.name),
+                        );
+                        let parent = target.parent().unwrap_or(&target);
+                        self.set_status(format!("created '{name}' in {}", parent.display()), false);
+                    }
+                    Err(e) => self.set_status(e, true),
+                }
+            }
+            JobKind::Deps => {
+                let message = if job.cancelled {
+                    (format!("cancelled {}", job.label), true)
+                } else {
+                    match deps::summarize(&job.program, &output) {
+                        Ok(last) => (format!("{}: {last}", job.label), false),
+                        Err(e) => (e, true),
+                    }
+                };
+                if let Mode::Deps(view) = &mut self.mode {
+                    view.reload();
+                    view.message = Some(message);
+                }
+            }
+        }
     }
 
     /// `D`: checks that the selected folder may be deleted, then asks to confirm.

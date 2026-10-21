@@ -2,7 +2,7 @@
 //! removed through its own package manager (`cargo add`, `npm install`, …).
 
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Command, Output};
 
 use crate::config::strip_comment;
 use crate::store::unquote;
@@ -192,17 +192,9 @@ pub fn describe(cmd: &Command) -> String {
     parts.join(" ")
 }
 
-/// Runs `cmd` with its output captured. Returns its last line on success,
+/// Sums up a finished package-manager run: its last output line on success,
 /// or the last error line on failure.
-pub fn run_captured(mut cmd: Command) -> Result<String, String> {
-    let program = cmd.get_program().to_string_lossy().into_owned();
-    let output = cmd
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|e| match e.kind() {
-            std::io::ErrorKind::NotFound => format!("{program} is not installed (or not on PATH)"),
-            _ => format!("could not run {program}: {e}"),
-        })?;
+pub fn summarize(program: &str, output: &Output) -> Result<String, String> {
     let last_line = |bytes: &[u8]| {
         String::from_utf8_lossy(bytes)
             .lines()

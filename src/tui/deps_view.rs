@@ -119,7 +119,8 @@ impl DepsView {
     }
 }
 
-pub(super) fn draw_deps(f: &mut Frame, view: &DepsView) {
+/// `running` is the status line of a background command, if one is running.
+pub(super) fn draw_deps(f: &mut Frame, view: &DepsView, running: Option<String>) {
     let area = popup(f.area(), 85, f.area().height * 4 / 5);
     f.render_widget(Clear, area);
     let title = format!(
@@ -166,7 +167,9 @@ pub(super) fn draw_deps(f: &mut Frame, view: &DepsView) {
         f.render_stateful_widget(list, body, &mut view.list.clone());
     }
 
-    let line = if let Some((text, dev)) = &view.input {
+    let line = if let Some(running) = running {
+        Line::from(format!(" {running}").yellow())
+    } else if let Some((text, dev)) = &view.input {
         let label = if *dev { " add dev: " } else { " add: " };
         let x = footer.x + (label.chars().count() + text.chars().count()) as u16;
         f.set_cursor_position((x.min(footer.right().saturating_sub(1)), footer.y));

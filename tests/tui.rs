@@ -189,6 +189,106 @@ fn n_creates_a_project_from_a_template() {
     assert_eq!(sb.registered(), vec!["made-here"]);
 }
 
+/// Templates run in the background: the TUI shows a spinner, and Esc stops
+/// the template together with everything it started.
+#[test]
+fn slow_template_runs_in_background_and_esc_cancels_it() {
+    let sb = Sandbox::new("tui-cancel");
+    let marker = sb.home.join("child-survived");
+    // A background child that would leave a marker if only `sh` were killed.
+    sb.write_config(&format!(
+        "scan_dirs = [\"code\"]\n[templates]\nempty = \"(sleep 1.5; touch '{}') & sleep 30; mkdir {{name}}\"\n",
+        marker.display()
+    ));
+    let Some(tui) = Tui::start(&sb, "cancel", &[]) else {
+        return;
+    };
+    tui.wait_for("No projects yet");
+    tui.keys(&["n"]);
+    tui.wait_for("New project in");
+    tui.type_text("slow");
+    tui.keys(&["Enter"]);
+    tui.wait_for("Template for 'slow'");
+    tui.keys(&["Enter"]);
+    tui.wait_for("creating 'slow' with template 'empty'");
+    tui.wait_for("Esc cancels");
+
+    tui.keys(&["q"]); // ignored while the job runs
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(!tui.has_exited(), "q must not quit during a job");
+    tui.keys(&["Escape"]);
+    tui.wait_for("cancelled creating 'slow'");
+
+    std::thread::sleep(Duration::from_millis(2000));
+    assert!(
+        !marker.exists(),
+        "the template's child process kept running"
+    );
+    assert!(!sb.home.join("code/slow").exists());
+    assert!(sb.registered().is_empty());
+}
+
+/// Regression test: a process left behind by a template (here one that also
+/// ignores SIGTERM) keeps the output pipes open; the TUI must not freeze.
+#[test]
+fn template_leaving_a_process_behind_does_not_freeze_the_tui() {
+    let sb = Sandbox::new("tui-linger");
+    sb.write_config(
+        "scan_dirs = [\"code\"]\n[templates]\nempty = \"(trap '' TERM; sleep 8) & mkdir {name}\"\n",
+    );
+    let Some(tui) = Tui::start(&sb, "linger", &[]) else {
+        return;
+    };
+    tui.wait_for("No projects yet");
+    tui.keys(&["n"]);
+    tui.type_text("lingers");
+    tui.keys(&["Enter"]);
+    tui.wait_for("Template for 'lingers'");
+    let started = std::time::Instant::now();
+    tui.keys(&["Enter"]);
+    tui.wait_for("created 'lingers'");
+    // The leftover process lives 8s; finishing well before that proves the TUI didn't wait for it.
+    assert!(
+        started.elapsed() < Duration::from_secs(6),
+        "took {:?}",
+        started.elapsed()
+    );
+    assert_eq!(sb.registered(), vec!["lingers"]);
+}
+
+/// Dependency commands run in the background too; a fake `cargo` on PATH
+/// keeps this offline.
+#[test]
+fn p_adds_a_dependency_in_the_background() {
+    let sb = Sandbox::new("tui-deps-add");
+    sb.file(
+        "code/app/Cargo.toml",
+        "[package]\nname = \"app\"\n[dependencies]\nitoa = \"1\"\n",
+    );
+    sb.write_config("scan_dirs = [\"code\"]\n");
+    let bin = sb.script(
+        "bin/cargo",
+        "sleep 1\necho \"      Adding $2 v9.9.9 to dependencies\" >&2\nprintf '%s = \"9.9.9\"\\n' \"$2\" >> Cargo.toml",
+    );
+    let path = format!(
+        "{}:{}",
+        bin.parent().unwrap().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let Some(tui) = Tui::start(&sb, "deps-add", &[("PATH", &path)]) else {
+        return;
+    };
+    tui.wait_for("auto-scan: added 1");
+    tui.keys(&["p"]);
+    tui.wait_for("Dependencies · app");
+    tui.keys(&["a"]);
+    tui.type_text("newdep");
+    tui.keys(&["Enter"]);
+    tui.wait_for("cargo add newdep · ");
+    tui.wait_for("cargo add newdep: Adding newdep v9.9.9");
+    tui.wait_for("9.9.9");
+}
+
 #[test]
 fn p_lists_dependencies() {
     let sb = Sandbox::new("tui-deps");

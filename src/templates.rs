@@ -139,6 +139,8 @@ pub fn prepare(
 
 /// Runs `template` to create `parent/name`, then registers it in `store`
 /// (the caller saves). Fails if the folder already exists or the command fails.
+/// The CLI and TUI run the steps themselves, to report progress in between.
+#[cfg(test)]
 pub fn create(
     store: &mut Store,
     template: &Template,
