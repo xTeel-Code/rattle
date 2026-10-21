@@ -61,8 +61,8 @@ max_depth = 3
 auto_scan = true
 
 # Editor for `e` (open a project) and `c` (edit this file).
-# Defaults to $VISUAL, then $EDITOR, then vi. GUI editors need their wait
-# flag so Rattle knows when you are done, e.g. \"code -w\" or \"zed -w\".
+# Defaults to $VISUAL, then $EDITOR, then vi. GUI editors (zed, code, cursor,
+# subl, …) get --wait automatically when editing this file, so \"zed\" is enough.
 # editor = \"hx\"
 
 # Uncomment to override the defaults shown here.

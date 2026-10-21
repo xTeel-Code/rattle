@@ -168,7 +168,7 @@ fn edit_config(file: &Path, arg: Option<&str>) -> Result<()> {
         None => {
             let dir = config_file.parent().unwrap_or(Path::new("."));
             let (mut cmd, editor) =
-                ops::editor_command(config.editor.as_deref(), dir, &config_file);
+                ops::editor_command(config.editor.as_deref(), dir, &config_file, true);
             let status = cmd.status().map_err(|e| format!("could not run '{editor}': {e}"))?;
             if !status.success() {
                 return Err(format!("'{editor}' exited with {status}").into());

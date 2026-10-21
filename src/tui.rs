@@ -238,7 +238,7 @@ impl App {
             KeyCode::Char('e') => {
                 if let Some(i) = self.selected() {
                     let path = PathBuf::from(&self.store.projects[i].path);
-                    self.open_editor(&path, Path::new("."), term)?;
+                    self.open_editor(&path, Path::new("."), false, term)?;
                 }
             }
             KeyCode::Char('c') => self.edit_config(term)?,
@@ -319,11 +319,12 @@ impl App {
     }
 
     /// Suspends the TUI, runs the editor on `target` inside `dir`, then restores
-    /// the TUI. Returns whether the editor could be started.
-    fn open_editor(&mut self, dir: &Path, target: &Path, term: &mut Term) -> Result<bool> {
+    /// the TUI. `wait` makes GUI editors block until the file is closed.
+    /// Returns whether the editor could be started.
+    fn open_editor(&mut self, dir: &Path, target: &Path, wait: bool, term: &mut Term) -> Result<bool> {
         // Read on every use so a changed `editor` setting applies without a restart.
         let configured = Config::load(&config::path_for(&self.file)).ok().and_then(|c| c.editor);
-        let (mut cmd, editor) = ops::editor_command(configured.as_deref(), dir, target);
+        let (mut cmd, editor) = ops::editor_command(configured.as_deref(), dir, target, wait);
         restore()?;
         let status = cmd.status();
         enable_raw_mode()?;
@@ -349,7 +350,7 @@ impl App {
             return Ok(());
         }
         let dir = config_file.parent().unwrap_or(Path::new(".")).to_path_buf();
-        if !self.open_editor(&dir, &config_file, term)? {
+        if !self.open_editor(&dir, &config_file, true, term)? {
             return Ok(());
         }
 

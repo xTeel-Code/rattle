@@ -109,18 +109,39 @@ fn is_ignored(p: &Path, ignore: &[String]) -> bool {
 
 /// Builds the command that opens `target` from inside `dir`, using the
 /// configured editor, else `$VISUAL`, else `$EDITOR`, else `vi`.
-/// Also returns the editor setting, for error messages.
-pub fn editor_command(configured: Option<&str>, dir: &Path, target: &Path) -> (Command, String) {
+/// With `wait`, GUI editors get their wait flag so the command only returns
+/// once the file is closed. Also returns the editor setting, for error messages.
+pub fn editor_command(
+    configured: Option<&str>,
+    dir: &Path,
+    target: &Path,
+    wait: bool,
+) -> (Command, String) {
     let from_env = |var| std::env::var(var).ok();
     let editor = [configured.map(str::to_string), from_env("VISUAL"), from_env("EDITOR")]
         .into_iter()
         .flatten()
         .find(|e| !e.trim().is_empty())
         .unwrap_or_else(|| "vi".into());
-    let mut parts = editor.split_whitespace();
-    let mut cmd = Command::new(parts.next().unwrap_or("vi"));
-    cmd.args(parts).arg(target).current_dir(dir);
+    let parts: Vec<&str> = editor.split_whitespace().collect();
+    let program = parts.first().copied().unwrap_or("vi");
+    let mut cmd = Command::new(program);
+    cmd.args(&parts[1..]);
+    let has_wait = parts.iter().any(|a| *a == "-w" || *a == "--wait");
+    if wait && !has_wait && is_gui_editor(program) {
+        cmd.arg("--wait");
+    }
+    cmd.arg(target).current_dir(dir);
     (cmd, editor)
+}
+
+/// GUI editors return immediately unless given `--wait`; terminal editors block anyway.
+fn is_gui_editor(program: &str) -> bool {
+    const GUI: &[&str] =
+        &["zed", "code", "code-insiders", "codium", "cursor", "windsurf", "subl", "mate"];
+    // Zed's bundled CLI is called `cli`, e.g. /Applications/Zed.app/Contents/MacOS/cli.
+    let name = Path::new(program).file_name().and_then(|n| n.to_str()).unwrap_or(program);
+    GUI.contains(&name) || program.contains("Zed.app/")
 }
 
 pub fn expand_tilde(p: &str) -> PathBuf {
@@ -139,6 +160,21 @@ fn is_hidden(p: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn editor_args(editor: &str, wait: bool) -> Vec<String> {
+        let (cmd, _) = editor_command(Some(editor), Path::new("."), Path::new("f.toml"), wait);
+        cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect()
+    }
+
+    #[test]
+    fn wait_flag_only_for_gui_editors_when_waiting() {
+        assert_eq!(editor_args("zed", true), vec!["--wait", "f.toml"]);
+        assert_eq!(editor_args("zed", false), vec!["f.toml"]);
+        assert_eq!(editor_args("zed -w", true), vec!["-w", "f.toml"]);
+        assert_eq!(editor_args("/Applications/Zed.app/Contents/MacOS/cli", true), vec!["--wait", "f.toml"]);
+        assert_eq!(editor_args("/usr/local/bin/code --new-window", true), vec!["--new-window", "--wait", "f.toml"]);
+        assert_eq!(editor_args("hx", true), vec!["f.toml"]);
+    }
 
     /// Builds a throwaway folder tree; paths ending in `/` are folders, others files.
     fn tree(name: &str, paths: &[&str]) -> PathBuf {
