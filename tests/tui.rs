@@ -78,6 +78,20 @@ fn enter_right_after_start_is_ignored() {
     );
 }
 
+/// The guard only covers leftovers from launching: once another key was
+/// pressed, Enter works at once, however soon after start.
+#[test]
+fn enter_after_another_key_works_immediately() {
+    let sb = with_projects("tui-guard-key");
+    let Some(tui) = Tui::start(&sb, "guard-key", &[]) else {
+        return;
+    };
+    tui.wait_for("Projects (2)");
+    tui.keys(&["j", "Enter"]);
+    let beta = canon(&sb.home.join("code/team/beta"));
+    assert_eq!(tui.wait_exit(), format!("{beta}\nEXIT=0\n"));
+}
+
 #[test]
 fn add_and_remove_an_entry() {
     let sb = Sandbox::new("tui-add");

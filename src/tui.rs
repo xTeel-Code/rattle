@@ -249,6 +249,14 @@ pub fn run(file: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Enter, or what an Enter typed before raw mode arrives as: the terminal
+/// turns it into a newline, which crossterm reports as Ctrl+J (or Ctrl+M).
+fn is_enter_like(key: &KeyEvent) -> bool {
+    key.code == KeyCode::Enter
+        || (key.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Char('j' | 'm')))
+}
+
 fn setup() -> io::Result<Term> {
     enable_raw_mode()?;
     execute!(io::stderr(), EnterAlternateScreen)?;
@@ -273,10 +281,10 @@ impl App {
                 if key.kind != KeyEventKind::Press {
                     continue;
                 }
-                if key.code == KeyCode::Enter
-                    && matches!(self.mode, Mode::Normal)
-                    && Instant::now() < enter_guard
-                {
+                if !is_enter_like(&key) {
+                    // Any other key means someone is using the TUI: Enter counts from now on.
+                    enter_guard = Instant::now();
+                } else if matches!(self.mode, Mode::Normal) && Instant::now() < enter_guard {
                     enter_guard = Instant::now() + ENTER_REPEAT_GAP;
                     continue;
                 }

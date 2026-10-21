@@ -203,13 +203,16 @@ pub fn delete_folder(path: &Path, mode: DeleteFiles) -> Result<(), String> {
     match mode {
         DeleteFiles::Off => Err("deleting folders is turned off (delete_files = \"off\")".into()),
         DeleteFiles::Trash => {
-            let mut trash = trash::TrashContext::default();
+            #[cfg(not(target_os = "macos"))]
+            let trash = trash::TrashContext::default();
             // Finder's method may pop up a permission dialog, which would hang the TUI.
             #[cfg(target_os = "macos")]
-            {
+            let trash = {
                 use trash::macos::{DeleteMethod, TrashContextExtMacos};
+                let mut trash = trash::TrashContext::default();
                 trash.set_delete_method(DeleteMethod::NsFileManager);
-            }
+                trash
+            };
             trash
                 .delete(path)
                 .map_err(|e| format!("could not move {} to the Trash: {e}", path.display()))
