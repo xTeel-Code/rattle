@@ -1,6 +1,7 @@
 mod config;
 mod ops;
 mod store;
+mod templates;
 mod tui;
 
 use std::io::{self, BufRead, IsTerminal, Write};
@@ -24,6 +25,8 @@ scan\t- will register every project found in your scan folders
 \t  rattle scan [-n | --dry-run] [-d | --depth N] [folder...]
 \t  (folders default to scan_dirs, depth to max_depth in ~/.rattle/config.toml)
 prune\t- removes entries whose folder no longer exists (rattle prune [-n | --dry-run])
+new\t- creates a project from a template and adds it
+\t  rattle new <name> [-t | --template T] [--in folder]   (rattle new --list shows templates)
 config\t- opens config.toml in $VISUAL / $EDITOR (`rattle config path` prints its path)
 
 In the TUI, Enter prints the selected path on exit, so `cd \"$(rattle)\"` works.
@@ -43,6 +46,7 @@ fn main() -> ExitCode {
         Some("delete") | Some("remove") | Some("rm") => delete(&file, &args[1..]),
         Some("scan") => scan(&file, &args[1..]),
         Some("prune") => prune(&file, &args[1..]),
+        Some("new") => new_project(&file, &args[1..]),
         Some("config") => edit_config(&file, args.get(1).map(String::as_str)),
         Some("tui") => tui::run(&file),
         // The TUI draws on stderr, so stdout may be captured by `$(rattle)`.
@@ -241,6 +245,59 @@ fn prune(file: &Path, args: &[String]) -> Result<()> {
     }
     let verb = if dry_run { "Would remove" } else { "Removed" };
     println!("{verb} {} missing project(s)", gone.len());
+    Ok(())
+}
+
+fn new_project(file: &Path, args: &[String]) -> Result<()> {
+    let config = Config::load(&config::path_for(file))?;
+    let (mut name, mut template, mut parent, mut list) = (None, None, None, false);
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "-l" | "--list" => list = true,
+            "-t" | "--template" => template = Some(args.next().ok_or("--template needs a name")?.clone()),
+            "--in" => parent = Some(args.next().ok_or("--in needs a folder")?.clone()),
+            other if other.starts_with('-') => return Err(format!("unknown new option: {other}").into()),
+            other => name = Some(other.to_string()),
+        }
+    }
+    let all = templates::all(&config);
+    if list {
+        let width = all.iter().map(|t| t.name.len()).max().unwrap_or(0);
+        for t in &all {
+            println!(" {:<width$}  {}", t.name, t.command);
+        }
+        return Ok(());
+    }
+
+    let name = match name {
+        Some(n) => n,
+        None => prompt("Project name: ")?,
+    };
+    templates::validate_name(&name)?;
+    let template = match template {
+        Some(t) => templates::find(&config, &t)?,
+        None if io::stdin().is_terminal() => {
+            for (i, t) in all.iter().enumerate() {
+                println!(" {i}. {:<11} {}", t.name, t.command);
+            }
+            let pick = prompt("Template (number or name, default empty): ")?;
+            match pick.parse::<usize>() {
+                Ok(i) if i < all.len() => all[i].clone(),
+                _ if pick.is_empty() => templates::find(&config, "empty")?,
+                _ => templates::find(&config, &pick)?,
+            }
+        }
+        None => templates::find(&config, "empty")?,
+    };
+    // A folder given with --in is relative to where rattle runs, like `create`.
+    let parent = templates::parent_dir(&config, parent.as_deref())?;
+
+    let mut store = Store::load(file)?;
+    println!("Creating '{name}' in {} with template '{}'…", parent.display(), template.name);
+    let project = templates::create(&mut store, &template, &name, &parent)?;
+    store.save(file)?;
+    println!("Created and added '{}' -> {}", project.name, project.path);
     Ok(())
 }
 

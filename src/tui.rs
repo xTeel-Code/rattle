@@ -22,6 +22,7 @@ use ratatui::{Frame, Terminal};
 use crate::config::{self, Config, DeleteFiles};
 use crate::ops;
 use crate::store::Store;
+use crate::templates::{self, Template};
 
 type Term = Terminal<CrosstermBackend<Stderr>>;
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -32,6 +33,7 @@ const KEYS: &[(&str, &str)] = &[
     ("Enter", "print path & quit (cd \"$(rattle)\")"),
     ("/", "filter"),
     ("a", "add project folder"),
+    ("n", "new project from a template"),
     ("d", "delete entry (files are kept)"),
     ("D", "delete entry and folder (delete_files)"),
     ("s", "scan folders from config.toml"),
@@ -56,6 +58,10 @@ enum Mode {
     /// Deleting the selected project's folder; `input` is the typed name
     /// (only needed for permanent deletion).
     ConfirmDeleteFiles { path: PathBuf, how: DeleteFiles, input: String },
+    /// `n`, step 1: typing the new project's name.
+    NewName { input: String, parent: PathBuf },
+    /// `n`, step 2: picking a template.
+    NewTemplate { name: String, parent: PathBuf, templates: Vec<Template>, list: ListState },
     Help,
 }
 
@@ -219,6 +225,41 @@ impl App {
                     self.set_status("cancelled; nothing was deleted", false);
                 }
             }
+            Mode::NewName { input, parent } => match key.code {
+                KeyCode::Esc => self.mode = Mode::Normal,
+                KeyCode::Backspace => {
+                    input.pop();
+                }
+                KeyCode::Char(c) => input.push(c),
+                KeyCode::Enter => {
+                    let name = input.trim().to_string();
+                    if let Err(e) = templates::validate_name(&name) {
+                        return Ok(self.set_status(e, true));
+                    }
+                    let parent = parent.clone();
+                    let templates = Config::load(&config::path_for(&self.file))
+                        .map(|c| templates::all(&c))
+                        .unwrap_or_default();
+                    let mut list = ListState::default();
+                    list.select(Some(0));
+                    self.mode = Mode::NewTemplate { name, parent, templates, list };
+                }
+                _ => {}
+            },
+            Mode::NewTemplate { name, parent, templates, list } => match key.code {
+                KeyCode::Esc => self.mode = Mode::Normal,
+                KeyCode::Down | KeyCode::Char('j') => list.select_next(),
+                KeyCode::Up | KeyCode::Char('k') => list.select_previous(),
+                KeyCode::Enter => {
+                    let Some(template) = list.selected().and_then(|i| templates.get(i)).cloned() else {
+                        return Ok(());
+                    };
+                    let (name, parent) = (name.clone(), parent.clone());
+                    self.mode = Mode::Normal;
+                    self.create_project(&name, &template, &parent, term)?;
+                }
+                _ => {}
+            },
             Mode::Add(input) => match key.code {
                 KeyCode::Esc => self.mode = Mode::Normal,
                 KeyCode::Backspace => {
@@ -283,6 +324,15 @@ impl App {
             }
             KeyCode::Char('c') => self.edit_config(term)?,
             KeyCode::Char('D') => self.start_delete_files(),
+            KeyCode::Char('n') => {
+                let parent = Config::load(&config::path_for(&self.file))
+                    .map_err(|e| e.to_string())
+                    .and_then(|c| templates::parent_dir(&c, None));
+                match parent {
+                    Ok(parent) => self.mode = Mode::NewName { input: String::new(), parent },
+                    Err(e) => self.set_status(e, true),
+                }
+            }
             KeyCode::Char('X') => {
                 if self.store.missing().is_empty() {
                     self.set_status("no missing projects", false);
@@ -315,6 +365,23 @@ impl App {
         self.refilter();
         self.list.select(self.visible.iter().position(|&i| self.store.projects[i].name == name));
         self.set_status(format!("added '{name}'"), false);
+    }
+
+    /// Runs the template (which may take a while), then registers and selects the project.
+    fn create_project(&mut self, name: &str, template: &Template, parent: &Path, term: &mut Term) -> Result<()> {
+        self.set_status(format!("creating '{name}' with template '{}'…", template.name), false);
+        term.draw(|f| self.draw(f))?;
+        match templates::create(&mut self.store, template, name, parent) {
+            Ok(project) => {
+                self.save();
+                self.filter.clear();
+                self.refilter();
+                self.list.select(self.visible.iter().position(|&i| self.store.projects[i].name == project.name));
+                self.set_status(format!("created '{name}' in {}", parent.display()), false);
+            }
+            Err(e) => self.set_status(e, true),
+        }
+        Ok(())
     }
 
     /// `D`: checks that the selected folder may be deleted, then asks to confirm.
@@ -504,6 +571,34 @@ impl App {
                     .block(Block::bordered().title(" Delete ").red()),
                     area,
                 );
+            }
+            Mode::NewName { input, parent } => {
+                let area = popup(f.area(), 70, 3);
+                f.render_widget(Clear, area);
+                let title = format!(" New project in {} (Enter / Esc) ", parent.display());
+                f.render_widget(Paragraph::new(input.as_str()).block(Block::bordered().title(title)), area);
+                let x = area.x + 1 + input.chars().count() as u16;
+                f.set_cursor_position((x.min(area.right() - 2), area.y + 1));
+            }
+            Mode::NewTemplate { name, templates, list, .. } => {
+                let width = templates.iter().map(|t| t.name.len()).max().unwrap_or(0);
+                let items: Vec<ListItem> = templates
+                    .iter()
+                    .map(|t| {
+                        ListItem::new(Line::from(vec![
+                            Span::raw(format!("{:<width$}  ", t.name)).bold(),
+                            Span::raw(t.command.clone()).dark_gray(),
+                        ]))
+                    })
+                    .collect();
+                let area = popup(f.area(), 80, templates.len() as u16 + 2);
+                f.render_widget(Clear, area);
+                let title = format!(" Template for '{name}' (Enter / Esc) ");
+                let widget = List::new(items)
+                    .block(Block::bordered().title(title))
+                    .highlight_style(Style::new().reversed())
+                    .highlight_symbol("▶ ");
+                f.render_stateful_widget(widget, area, &mut list.clone());
             }
             Mode::ConfirmDeleteFiles { path, how, input } => {
                 let name = self.selected().map(|i| self.store.projects[i].name.as_str()).unwrap_or("");

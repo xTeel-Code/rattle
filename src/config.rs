@@ -98,6 +98,14 @@ auto_scan = true
 # \"permanent\" deletes it for good after you type the project name.
 delete_files = \"off\"
 
+# Where `rattle new` / `n` creates projects. Defaults to the first scan dir.
+# new_project_dir = \"~/code\"
+
+# Extra templates for `rattle new`, or overrides of the built-in ones
+# (empty, rust, rust-lib, python, python-lib, node, go). {name} is the
+# project name; the command runs in new_project_dir and must create {name}.
+# templates.web = \"npm create vite@latest {name} -- --template react-ts\"
+
 # Uncomment to override the defaults shown here.
 # A folder counts as a project if it contains any of these.
 # markers = [\".git\", \"Cargo.toml\", \"pyproject.toml\", \"package.json\", \"go.mod\",
@@ -117,6 +125,10 @@ pub struct Config {
     /// Overrides `$VISUAL` / `$EDITOR` when set.
     pub editor: Option<String>,
     pub delete_files: DeleteFiles,
+    /// Where `rattle new` creates projects (default: the first scan dir).
+    pub new_project_dir: Option<String>,
+    /// User-defined `templates.<name> = "command"`, in file order.
+    pub templates: Vec<(String, String)>,
 }
 
 impl Default for Config {
@@ -129,6 +141,8 @@ impl Default for Config {
             ignore: DEFAULT_IGNORE.iter().map(|m| m.to_string()).collect(),
             editor: None,
             delete_files: DeleteFiles::Off,
+            new_project_dir: None,
+            templates: Vec::new(),
         }
     }
 }
@@ -153,6 +167,8 @@ impl Config {
     pub fn parse(text: &str) -> Self {
         let mut config = Self::default();
         let mut pending: Option<(String, String)> = None;
+        // Current `[table]`, so `[templates]` + `rust = "..."` means `templates.rust`.
+        let mut table = String::new();
         for line in text.lines() {
             let line = strip_comment(line).trim();
             if line.is_empty() {
@@ -165,8 +181,14 @@ impl Config {
                     (key, acc)
                 }
                 None => match line.split_once('=') {
-                    Some((k, v)) => (k.trim().to_string(), v.trim().to_string()),
-                    None => continue,
+                    Some((k, v)) if table.is_empty() => (k.trim().to_string(), v.trim().to_string()),
+                    Some((k, v)) => (format!("{table}.{}", k.trim()), v.trim().to_string()),
+                    None => {
+                        if let Some(name) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+                            table = name.trim().to_string();
+                        }
+                        continue;
+                    }
                 },
             };
             if value.starts_with('[') && !value.ends_with(']') {
@@ -180,6 +202,18 @@ impl Config {
                 "editor" => {
                     let editor = unquote(&value);
                     config.editor = (!editor.trim().is_empty()).then_some(editor);
+                }
+                "new_project_dir" => {
+                    let dir = unquote(&value);
+                    config.new_project_dir = (!dir.trim().is_empty()).then(|| home_relative(dir));
+                }
+                k if k.starts_with("templates.") => {
+                    let name = unquote(&k["templates.".len()..]);
+                    let command = unquote(&value);
+                    config.templates.retain(|(n, _)| *n != name);
+                    if !command.trim().is_empty() {
+                        config.templates.push((name, command));
+                    }
                 }
                 "delete_files" => {
                     // Anything unrecognised stays "off": never delete files by accident.
@@ -279,6 +313,22 @@ mod tests {
         assert_eq!(parse("\"permanent\""), DeleteFiles::Permanent);
         assert_eq!(parse("\"yes\""), DeleteFiles::Off);
         assert_eq!(parse("true"), DeleteFiles::Off);
+    }
+
+    #[test]
+    fn parses_templates_as_dotted_keys_and_table() {
+        let c = Config::parse(
+            "new_project_dir = \"code\"\ntemplates.web = \"npm create vite {name}\"\n\
+             [templates]\nrust = \"cargo new --vcs none {name}\"\nweb = \"pnpm create vite {name}\"\n",
+        );
+        assert_eq!(c.new_project_dir.as_deref(), Some("~/code"));
+        assert_eq!(
+            c.templates,
+            vec![
+                ("rust".to_string(), "cargo new --vcs none {name}".to_string()),
+                ("web".to_string(), "pnpm create vite {name}".to_string()),
+            ]
+        );
     }
 
     #[test]
