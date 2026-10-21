@@ -22,7 +22,10 @@ pub fn resolve_project(raw: &str) -> Result<Project, String> {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .ok_or("cannot derive a project name from that path")?;
-    Ok(Project { name, path: path.to_string_lossy().into_owned() })
+    Ok(Project {
+        name,
+        path: path.to_string_lossy().into_owned(),
+    })
 }
 
 #[derive(Debug, Default)]
@@ -44,7 +47,9 @@ pub fn scan_roots(store: &mut Store, roots: &[String], config: &Config) -> ScanR
         let root = match std::fs::canonicalize(expand_tilde(raw)) {
             Ok(r) if r.is_dir() => r,
             _ => {
-                report.warnings.push(format!("skipping '{raw}': not an accessible directory"));
+                report
+                    .warnings
+                    .push(format!("skipping '{raw}': not an accessible directory"));
                 continue;
             }
         };
@@ -53,8 +58,10 @@ pub fn scan_roots(store: &mut Store, roots: &[String], config: &Config) -> ScanR
             report.warnings.push(format!("skipping '{raw}': {e}"));
             continue;
         }
-        let mut dirs: Vec<PathBuf> =
-            dirs.into_iter().filter_map(|p| std::fs::canonicalize(p).ok()).collect();
+        let mut dirs: Vec<PathBuf> = dirs
+            .into_iter()
+            .filter_map(|p| std::fs::canonicalize(p).ok())
+            .collect();
         dirs.sort();
 
         for dir in dirs {
@@ -63,7 +70,11 @@ pub fn scan_roots(store: &mut Store, roots: &[String], config: &Config) -> ScanR
                 report.already += 1;
                 continue;
             }
-            let name = dir.file_name().unwrap_or_default().to_string_lossy().into_owned();
+            let name = dir
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
             if let Some(existing) = store.find(&name) {
                 report.warnings.push(format!(
                     "skipping {path}: name '{name}' is already used by {}",
@@ -71,7 +82,10 @@ pub fn scan_roots(store: &mut Store, roots: &[String], config: &Config) -> ScanR
                 ));
                 continue;
             }
-            let project = Project { name, path: path.clone() };
+            let project = Project {
+                name,
+                path: path.clone(),
+            };
             store.projects.push(project.clone());
             report.added.push(project);
             known.insert(path);
@@ -82,13 +96,20 @@ pub fn scan_roots(store: &mut Store, roots: &[String], config: &Config) -> ScanR
 
 /// Collects project folders below `dir`, at most `depth` levels down.
 /// Errors only for `dir` itself; unreadable subfolders are skipped.
-fn find_projects(dir: &Path, depth: usize, config: &Config, out: &mut Vec<PathBuf>) -> io::Result<()> {
+fn find_projects(
+    dir: &Path,
+    depth: usize,
+    config: &Config,
+    out: &mut Vec<PathBuf>,
+) -> io::Result<()> {
     if depth == 0 {
         return Ok(());
     }
     for entry in std::fs::read_dir(dir)?.flatten() {
         let path = entry.path();
-        let Ok(kind) = entry.file_type() else { continue };
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
         // Symlinked folders may be projects but are never descended into (avoids loops).
         let is_dir = kind.is_dir() || (kind.is_symlink() && path.is_dir());
         if !is_dir || is_hidden(&path) || is_ignored(&path, &config.ignore) {
@@ -104,7 +125,8 @@ fn find_projects(dir: &Path, depth: usize, config: &Config, out: &mut Vec<PathBu
 }
 
 fn is_ignored(p: &Path, ignore: &[String]) -> bool {
-    p.file_name().is_some_and(|n| ignore.iter().any(|i| n == i.as_str()))
+    p.file_name()
+        .is_some_and(|n| ignore.iter().any(|i| n == i.as_str()))
 }
 
 /// Checks that `project`'s folder is safe to delete and returns its real path.
@@ -124,14 +146,18 @@ pub fn deletable_folder(
     // Is `other` this folder or somewhere inside it?
     let covers = |other: &Path| std::fs::canonicalize(other).is_ok_and(|o| o.starts_with(&path));
     // Is this folder strictly inside `base`?
-    let inside = |base: &Path| std::fs::canonicalize(base).is_ok_and(|b| path.starts_with(&b) && path != b);
+    let inside =
+        |base: &Path| std::fs::canonicalize(base).is_ok_and(|b| path.starts_with(&b) && path != b);
 
     if path.components().count() <= 2 {
-        return Err(format!("refusing to delete top-level folder {}", path.display()));
+        return Err(format!(
+            "refusing to delete top-level folder {}",
+            path.display()
+        ));
     }
     // Allow-list rather than a list of system folders: only places projects live.
-    let allowed_place = inside(&store::home_dir())
-        || config.scan_dirs.iter().any(|d| inside(&expand_tilde(d)));
+    let allowed_place =
+        inside(&store::home_dir()) || config.scan_dirs.iter().any(|d| inside(&expand_tilde(d)));
     if !allowed_place {
         return Err(format!(
             "refusing to delete {}: only folders inside your home folder or a scan folder can be deleted",
@@ -139,13 +165,22 @@ pub fn deletable_folder(
         ));
     }
     if covers(&store::home_dir()) {
-        return Err(format!("refusing to delete {}: it is or contains your home folder", path.display()));
+        return Err(format!(
+            "refusing to delete {}: it is or contains your home folder",
+            path.display()
+        ));
     }
     if let Some(dir) = config.scan_dirs.iter().find(|d| covers(&expand_tilde(d))) {
-        return Err(format!("refusing to delete {}: it is or contains scan folder {dir}", path.display()));
+        return Err(format!(
+            "refusing to delete {}: it is or contains scan folder {dir}",
+            path.display()
+        ));
     }
     if registry.parent().is_some_and(covers) {
-        return Err(format!("refusing to delete {}: it contains Rattle's own data", path.display()));
+        return Err(format!(
+            "refusing to delete {}: it contains Rattle's own data",
+            path.display()
+        ));
     }
     let nested: Vec<&str> = store
         .projects
@@ -168,14 +203,19 @@ pub fn delete_folder(path: &Path, mode: DeleteFiles) -> Result<(), String> {
     match mode {
         DeleteFiles::Off => Err("deleting folders is turned off (delete_files = \"off\")".into()),
         DeleteFiles::Trash => {
-            let mut trash = trash::TrashContext::default();
+            #[cfg(not(target_os = "macos"))]
+            let trash = trash::TrashContext::default();
             // Finder's method may pop up a permission dialog, which would hang the TUI.
             #[cfg(target_os = "macos")]
-            {
+            let trash = {
                 use trash::macos::{DeleteMethod, TrashContextExtMacos};
+                let mut trash = trash::TrashContext::default();
                 trash.set_delete_method(DeleteMethod::NsFileManager);
-            }
-            trash.delete(path).map_err(|e| format!("could not move {} to the Trash: {e}", path.display()))
+                trash
+            };
+            trash
+                .delete(path)
+                .map_err(|e| format!("could not move {} to the Trash: {e}", path.display()))
         }
         DeleteFiles::Permanent => std::fs::remove_dir_all(path)
             .map_err(|e| format!("could not delete {}: {e}", path.display())),
@@ -193,11 +233,15 @@ pub fn editor_command(
     wait: bool,
 ) -> (Command, String) {
     let from_env = |var| std::env::var(var).ok();
-    let editor = [configured.map(str::to_string), from_env("VISUAL"), from_env("EDITOR")]
-        .into_iter()
-        .flatten()
-        .find(|e| !e.trim().is_empty())
-        .unwrap_or_else(|| "vi".into());
+    let editor = [
+        configured.map(str::to_string),
+        from_env("VISUAL"),
+        from_env("EDITOR"),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|e| !e.trim().is_empty())
+    .unwrap_or_else(|| "vi".into());
     let parts: Vec<&str> = editor.split_whitespace().collect();
     let program = parts.first().copied().unwrap_or("vi");
     let mut cmd = Command::new(program);
@@ -212,10 +256,21 @@ pub fn editor_command(
 
 /// GUI editors return immediately unless given `--wait`; terminal editors block anyway.
 fn is_gui_editor(program: &str) -> bool {
-    const GUI: &[&str] =
-        &["zed", "code", "code-insiders", "codium", "cursor", "windsurf", "subl", "mate"];
+    const GUI: &[&str] = &[
+        "zed",
+        "code",
+        "code-insiders",
+        "codium",
+        "cursor",
+        "windsurf",
+        "subl",
+        "mate",
+    ];
     // Zed's bundled CLI is called `cli`, e.g. /Applications/Zed.app/Contents/MacOS/cli.
-    let name = Path::new(program).file_name().and_then(|n| n.to_str()).unwrap_or(program);
+    let name = Path::new(program)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(program);
     GUI.contains(&name) || program.contains("Zed.app/")
 }
 
@@ -229,7 +284,8 @@ pub fn expand_tilde(p: &str) -> PathBuf {
 }
 
 fn is_hidden(p: &Path) -> bool {
-    p.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.'))
+    p.file_name()
+        .is_some_and(|n| n.to_string_lossy().starts_with('.'))
 }
 
 #[cfg(test)]
@@ -238,7 +294,9 @@ mod tests {
 
     fn editor_args(editor: &str, wait: bool) -> Vec<String> {
         let (cmd, _) = editor_command(Some(editor), Path::new("."), Path::new("f.toml"), wait);
-        cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect()
+        cmd.get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
     }
 
     #[test]
@@ -246,8 +304,14 @@ mod tests {
         assert_eq!(editor_args("zed", true), vec!["--wait", "f.toml"]);
         assert_eq!(editor_args("zed", false), vec!["f.toml"]);
         assert_eq!(editor_args("zed -w", true), vec!["-w", "f.toml"]);
-        assert_eq!(editor_args("/Applications/Zed.app/Contents/MacOS/cli", true), vec!["--wait", "f.toml"]);
-        assert_eq!(editor_args("/usr/local/bin/code --new-window", true), vec!["--new-window", "--wait", "f.toml"]);
+        assert_eq!(
+            editor_args("/Applications/Zed.app/Contents/MacOS/cli", true),
+            vec!["--wait", "f.toml"]
+        );
+        assert_eq!(
+            editor_args("/usr/local/bin/code --new-window", true),
+            vec!["--new-window", "--wait", "f.toml"]
+        );
         assert_eq!(editor_args("hx", true), vec!["f.toml"]);
     }
 
@@ -290,7 +354,10 @@ mod tests {
         let report = scan_roots(&mut store, &roots, &Config::default());
         assert_eq!(names(&report), vec!["flat", "nested"]);
 
-        let deeper = Config { max_depth: 4, ..Config::default() };
+        let deeper = Config {
+            max_depth: 4,
+            ..Config::default()
+        };
         let report = scan_roots(&mut store, &roots, &deeper);
         assert_eq!((names(&report), report.already), (vec!["too-deep"], 2));
         std::fs::remove_dir_all(root).unwrap();
@@ -299,22 +366,42 @@ mod tests {
     #[test]
     fn depth_one_matches_direct_children_only() {
         let root = tree("shallow", &["top/.git/", "group/child/.git/"]);
-        let config = Config { max_depth: 1, ..Config::default() };
-        let report = scan_roots(&mut Store::default(), &[root.display().to_string()], &config);
+        let config = Config {
+            max_depth: 1,
+            ..Config::default()
+        };
+        let report = scan_roots(
+            &mut Store::default(),
+            &[root.display().to_string()],
+            &config,
+        );
         assert_eq!(names(&report), vec!["top"]);
         std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn deletable_folder_refuses_dangerous_targets() {
-        let root = tree("delete", &["scan/proj/.git/", "scan/outer/inner/.git/", "scan/reg/"]);
+        let root = tree(
+            "delete",
+            &["scan/proj/.git/", "scan/outer/inner/.git/", "scan/reg/"],
+        );
         let at = |rel: &str| root.join(rel).display().to_string();
-        let project = |name: &str, rel: &str| Project { name: name.into(), path: at(rel) };
+        let project = |name: &str, rel: &str| Project {
+            name: name.into(),
+            path: at(rel),
+        };
         let mut store = Store::default();
-        for (name, rel) in [("proj", "scan/proj"), ("outer", "scan/outer"), ("inner", "scan/outer/inner")] {
+        for (name, rel) in [
+            ("proj", "scan/proj"),
+            ("outer", "scan/outer"),
+            ("inner", "scan/outer/inner"),
+        ] {
             store.add(project(name, rel)).unwrap();
         }
-        let config = Config { scan_dirs: vec![at("scan")], ..Config::default() };
+        let config = Config {
+            scan_dirs: vec![at("scan")],
+            ..Config::default()
+        };
         let registry = root.join("scan/reg/projects.toml");
         let check = |p: &Project| deletable_folder(p, &store, &config, &registry);
 
@@ -324,13 +411,35 @@ mod tests {
             let err = check(&p).unwrap_err();
             assert!(err.contains(why), "{err}");
         };
-        refused(project("outer", "scan/outer"), "other registered projects (inner)");
+        refused(
+            project("outer", "scan/outer"),
+            "other registered projects (inner)",
+        );
         refused(project("scan", "scan"), "scan folder");
         refused(project("reg", "scan/reg"), "Rattle's own data");
-        refused(Project { name: "root".into(), path: "/".into() }, "top-level");
-        // /tmp is /private/tmp on macOS: not top-level by depth, but outside home/scan dirs.
-        refused(Project { name: "tmp".into(), path: "/tmp".into() }, "only folders inside");
-        refused(Project { name: "usr".into(), path: "/usr/local".into() }, "only folders inside");
+        refused(
+            Project {
+                name: "root".into(),
+                path: "/".into(),
+            },
+            "top-level",
+        );
+        // /tmp is top-level on Linux, but /private/tmp on macOS, where only the
+        // home/scan-dir allow-list refuses it. Either way it must be refused.
+        refused(
+            Project {
+                name: "tmp".into(),
+                path: "/tmp".into(),
+            },
+            "refusing to delete",
+        );
+        refused(
+            Project {
+                name: "usr".into(),
+                path: "/usr/local".into(),
+            },
+            "only folders inside",
+        );
         refused(project("ghost", "scan/ghost"), "cannot access");
         std::fs::remove_dir_all(root).unwrap();
     }

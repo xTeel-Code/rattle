@@ -11,7 +11,8 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    disable_raw_mode, enable_raw_mode, Clear as ClearScreen, ClearType, EnterAlternateScreen,
+    LeaveAlternateScreen,
 };
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Style, Stylize};
@@ -61,11 +62,23 @@ enum Mode {
     ConfirmPrune,
     /// Deleting the selected project's folder; `input` is the typed name
     /// (only needed for permanent deletion).
-    ConfirmDeleteFiles { path: PathBuf, how: DeleteFiles, input: String },
+    ConfirmDeleteFiles {
+        path: PathBuf,
+        how: DeleteFiles,
+        input: String,
+    },
     /// `n`, step 1: typing the new project's name.
-    NewName { input: String, parent: PathBuf },
+    NewName {
+        input: String,
+        parent: PathBuf,
+    },
     /// `n`, step 2: picking a template.
-    NewTemplate { name: String, parent: PathBuf, templates: Vec<Template>, list: ListState },
+    NewTemplate {
+        name: String,
+        parent: PathBuf,
+        templates: Vec<Template>,
+        list: ListState,
+    },
     /// `p`: the selected project's dependencies.
     Deps(Box<DepsView>),
     /// `,`: the settings form.
@@ -114,7 +127,11 @@ impl DepsView {
         match deps::list(&self.dir, self.manager) {
             Ok(list) => {
                 self.deps = list;
-                let sel = self.list.selected().unwrap_or(0).min(self.deps.len().saturating_sub(1));
+                let sel = self
+                    .list
+                    .selected()
+                    .unwrap_or(0)
+                    .min(self.deps.len().saturating_sub(1));
                 self.list.select((!self.deps.is_empty()).then_some(sel));
             }
             Err(e) => self.message = Some((e, true)),
@@ -130,11 +147,17 @@ impl DepsView {
                 }
                 KeyCode::Char(c) => text.push(c),
                 KeyCode::Enter => {
-                    let packages: Vec<String> = text.split_whitespace().map(str::to_string).collect();
+                    let packages: Vec<String> =
+                        text.split_whitespace().map(str::to_string).collect();
                     let dev = *dev;
                     self.input = None;
                     if !packages.is_empty() {
-                        return DepsAction::Run(deps::add_command(self.manager, &self.dir, &packages, dev));
+                        return DepsAction::Run(deps::add_command(
+                            self.manager,
+                            &self.dir,
+                            &packages,
+                            dev,
+                        ));
                     }
                 }
                 _ => {}
@@ -145,9 +168,12 @@ impl DepsView {
             self.confirm_remove = false;
             let dep = self.list.selected().and_then(|i| self.deps.get(i));
             return match (key.code, dep) {
-                (KeyCode::Char('y' | 'Y'), Some(dep)) => {
-                    DepsAction::Run(deps::remove_command(self.manager, &self.dir, &dep.name, &dep.group))
-                }
+                (KeyCode::Char('y' | 'Y'), Some(dep)) => DepsAction::Run(deps::remove_command(
+                    self.manager,
+                    &self.dir,
+                    &dep.name,
+                    &dep.group,
+                )),
                 _ => {
                     self.message = Some(("cancelled".into(), false));
                     DepsAction::Nothing
@@ -161,7 +187,9 @@ impl DepsView {
             KeyCode::Up | KeyCode::Char('k') => self.list.select_previous(),
             KeyCode::Char('a') => self.input = Some((String::new(), false)),
             KeyCode::Char('A') => self.input = Some((String::new(), true)),
-            KeyCode::Char('x') | KeyCode::Char('d') | KeyCode::Delete if self.list.selected().is_some() => {
+            KeyCode::Char('x') | KeyCode::Char('d') | KeyCode::Delete
+                if self.list.selected().is_some() =>
+            {
                 self.confirm_remove = true
             }
             KeyCode::Char('r') => {
@@ -209,7 +237,9 @@ pub fn run(file: &Path) -> Result<()> {
     }));
 
     let mut term = setup()?;
-    let result = app.auto_scan(&mut term).and_then(|()| app.event_loop(&mut term));
+    let result = app
+        .auto_scan(&mut term)
+        .and_then(|()| app.event_loop(&mut term));
     restore()?;
     result?;
 
@@ -217,6 +247,14 @@ pub fn run(file: &Path) -> Result<()> {
         println!("{path}");
     }
     Ok(())
+}
+
+/// Enter, or what an Enter typed before raw mode arrives as: the terminal
+/// turns it into a newline, which crossterm reports as Ctrl+J (or Ctrl+M).
+fn is_enter_like(key: &KeyEvent) -> bool {
+    key.code == KeyCode::Enter
+        || (key.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Char('j' | 'm')))
 }
 
 fn setup() -> io::Result<Term> {
@@ -243,10 +281,10 @@ impl App {
                 if key.kind != KeyEventKind::Press {
                     continue;
                 }
-                if key.code == KeyCode::Enter
-                    && matches!(self.mode, Mode::Normal)
-                    && Instant::now() < enter_guard
-                {
+                if !is_enter_like(&key) {
+                    // Any other key means someone is using the TUI: Enter counts from now on.
+                    enter_guard = Instant::now();
+                } else if matches!(self.mode, Mode::Normal) && Instant::now() < enter_guard {
                     enter_guard = Instant::now() + ENTER_REPEAT_GAP;
                     continue;
                 }
@@ -257,7 +295,9 @@ impl App {
     }
 
     fn selected(&self) -> Option<usize> {
-        self.list.selected().and_then(|i| self.visible.get(i).copied())
+        self.list
+            .selected()
+            .and_then(|i| self.visible.get(i).copied())
     }
 
     fn refilter(&mut self) {
@@ -268,7 +308,11 @@ impl App {
                 p.name.to_lowercase().contains(&needle) || p.path.to_lowercase().contains(&needle)
             })
             .collect();
-        let sel = self.list.selected().unwrap_or(0).min(self.visible.len().saturating_sub(1));
+        let sel = self
+            .list
+            .selected()
+            .unwrap_or(0)
+            .min(self.visible.len().saturating_sub(1));
         self.list.select((!self.visible.is_empty()).then_some(sel));
     }
 
@@ -365,16 +409,27 @@ impl App {
                         .unwrap_or_default();
                     let mut list = ListState::default();
                     list.select(Some(0));
-                    self.mode = Mode::NewTemplate { name, parent, templates, list };
+                    self.mode = Mode::NewTemplate {
+                        name,
+                        parent,
+                        templates,
+                        list,
+                    };
                 }
                 _ => {}
             },
-            Mode::NewTemplate { name, parent, templates, list } => match key.code {
+            Mode::NewTemplate {
+                name,
+                parent,
+                templates,
+                list,
+            } => match key.code {
                 KeyCode::Esc => self.mode = Mode::Normal,
                 KeyCode::Down | KeyCode::Char('j') => list.select_next(),
                 KeyCode::Up | KeyCode::Char('k') => list.select_previous(),
                 KeyCode::Enter => {
-                    let Some(template) = list.selected().and_then(|i| templates.get(i)).cloned() else {
+                    let Some(template) = list.selected().and_then(|i| templates.get(i)).cloned()
+                    else {
                         return Ok(());
                     };
                     let (name, parent) = (name.clone(), parent.clone());
@@ -465,7 +520,12 @@ impl App {
                     .map_err(|e| e.to_string())
                     .and_then(|c| templates::parent_dir(&c, None));
                 match parent {
-                    Ok(parent) => self.mode = Mode::NewName { input: String::new(), parent },
+                    Ok(parent) => {
+                        self.mode = Mode::NewName {
+                            input: String::new(),
+                            parent,
+                        }
+                    }
                     Err(e) => self.set_status(e, true),
                 }
             }
@@ -499,7 +559,11 @@ impl App {
         self.save();
         self.filter.clear();
         self.refilter();
-        self.list.select(self.visible.iter().position(|&i| self.store.projects[i].name == name));
+        self.list.select(
+            self.visible
+                .iter()
+                .position(|&i| self.store.projects[i].name == name),
+        );
         self.set_status(format!("added '{name}'"), false);
     }
 
@@ -523,15 +587,28 @@ impl App {
     }
 
     /// Runs the template (which may take a while), then registers and selects the project.
-    fn create_project(&mut self, name: &str, template: &Template, parent: &Path, term: &mut Term) -> Result<()> {
-        self.set_status(format!("creating '{name}' with template '{}'…", template.name), false);
+    fn create_project(
+        &mut self,
+        name: &str,
+        template: &Template,
+        parent: &Path,
+        term: &mut Term,
+    ) -> Result<()> {
+        self.set_status(
+            format!("creating '{name}' with template '{}'…", template.name),
+            false,
+        );
         term.draw(|f| self.draw(f))?;
         match templates::create(&mut self.store, template, name, parent) {
             Ok(project) => {
                 self.save();
                 self.filter.clear();
                 self.refilter();
-                self.list.select(self.visible.iter().position(|&i| self.store.projects[i].name == project.name));
+                self.list.select(
+                    self.visible
+                        .iter()
+                        .position(|&i| self.store.projects[i].name == project.name),
+                );
                 self.set_status(format!("created '{name}' in {}", parent.display()), false);
             }
             Err(e) => self.set_status(e, true),
@@ -555,7 +632,11 @@ impl App {
         }
         match ops::deletable_folder(&self.store.projects[i], &self.store, &config, &self.file) {
             Ok(path) => {
-                self.mode = Mode::ConfirmDeleteFiles { path, how: config.delete_files, input: String::new() }
+                self.mode = Mode::ConfirmDeleteFiles {
+                    path,
+                    how: config.delete_files,
+                    input: String::new(),
+                }
             }
             Err(e) => self.set_status(e, true),
         }
@@ -569,7 +650,11 @@ impl App {
         let p = self.store.projects.remove(i);
         self.save();
         self.refilter();
-        let what = if how == DeleteFiles::Trash { "moved to the Trash" } else { "deleted" };
+        let what = if how == DeleteFiles::Trash {
+            "moved to the Trash"
+        } else {
+            "deleted"
+        };
         self.set_status(format!("removed '{}'; folder {what}", p.name), false);
     }
 
@@ -577,7 +662,9 @@ impl App {
     /// scan_dirs are set; stays quiet unless something was found or went wrong.
     fn auto_scan(&mut self, term: &mut Term) -> Result<()> {
         let config_file = config::path_for(&self.file);
-        let Ok(config) = Config::load(&config_file) else { return Ok(()) };
+        let Ok(config) = Config::load(&config_file) else {
+            return Ok(());
+        };
         if !config.auto_scan || config.scan_dirs.is_empty() {
             return Ok(());
         }
@@ -629,15 +716,30 @@ impl App {
     /// Suspends the TUI, runs the editor on `target` inside `dir`, then restores
     /// the TUI. `wait` makes GUI editors block until the file is closed.
     /// Returns whether the editor could be started.
-    fn open_editor(&mut self, dir: &Path, target: &Path, wait: bool, term: &mut Term) -> Result<bool> {
+    fn open_editor(
+        &mut self,
+        dir: &Path,
+        target: &Path,
+        wait: bool,
+        term: &mut Term,
+    ) -> Result<bool> {
         // Read on every use so a changed `editor` setting applies without a restart.
-        let configured = Config::load(&config::path_for(&self.file)).ok().and_then(|c| c.editor);
+        let configured = Config::load(&config::path_for(&self.file))
+            .ok()
+            .and_then(|c| c.editor);
         let (mut cmd, editor) = ops::editor_command(configured.as_deref(), dir, target, wait);
         restore()?;
         let status = cmd.status();
         enable_raw_mode()?;
-        execute!(io::stderr(), EnterAlternateScreen)?;
-        term.clear()?;
+        execute!(
+            io::stderr(),
+            EnterAlternateScreen,
+            ClearScreen(ClearType::All)
+        )?;
+        // Not `term.clear()`: it asks the terminal for the cursor position over
+        // stdout, which never answers when stdout is captured (`cd "$(rattle)"`).
+        // A fresh Terminal has empty buffers, so the next draw repaints everything.
+        *term = Terminal::new(CrosstermBackend::new(io::stderr()))?;
 
         match status {
             Ok(_) => Ok(true),
@@ -684,7 +786,10 @@ impl App {
             Err(e) => return self.set_status(format!("cannot read config: {e}"), true),
         };
         if config.scan_dirs.is_empty() {
-            self.set_status(format!("{done}; set scan_dirs to find projects automatically"), false);
+            self.set_status(
+                format!("{done}; set scan_dirs to find projects automatically"),
+                false,
+            );
         } else if config.auto_scan {
             self.run_scan(&config, false);
             if let Some((msg, _)) = &mut self.status {
@@ -728,7 +833,9 @@ impl App {
                 f.set_cursor_position((x.min(area.right() - 2), area.y + 1));
             }
             Mode::ConfirmDelete => {
-                let name = self.selected().map(|i| self.store.projects[i].name.as_str());
+                let name = self
+                    .selected()
+                    .map(|i| self.store.projects[i].name.as_str());
                 let area = popup(f.area(), 50, 4);
                 f.render_widget(Clear, area);
                 f.render_widget(
@@ -750,11 +857,19 @@ impl App {
                 let area = popup(f.area(), 70, 3);
                 f.render_widget(Clear, area);
                 let title = format!(" New project in {} (Enter / Esc) ", parent.display());
-                f.render_widget(Paragraph::new(input.as_str()).block(Block::bordered().title(title)), area);
+                f.render_widget(
+                    Paragraph::new(input.as_str()).block(Block::bordered().title(title)),
+                    area,
+                );
                 let x = area.x + 1 + input.chars().count() as u16;
                 f.set_cursor_position((x.min(area.right() - 2), area.y + 1));
             }
-            Mode::NewTemplate { name, templates, list, .. } => {
+            Mode::NewTemplate {
+                name,
+                templates,
+                list,
+                ..
+            } => {
                 let width = templates.iter().map(|t| t.name.len()).max().unwrap_or(0);
                 let items: Vec<ListItem> = templates
                     .iter()
@@ -775,14 +890,19 @@ impl App {
                 f.render_stateful_widget(widget, area, &mut list.clone());
             }
             Mode::ConfirmDeleteFiles { path, how, input } => {
-                let name = self.selected().map(|i| self.store.projects[i].name.as_str()).unwrap_or("");
+                let name = self
+                    .selected()
+                    .map(|i| self.store.projects[i].name.as_str())
+                    .unwrap_or("");
                 let path = path.display().to_string();
                 let lines = match how {
                     DeleteFiles::Permanent => vec![
                         Line::from("Permanently delete this folder and everything in it?"),
                         Line::from(path).bold(),
                         Line::from("This cannot be undone.".red().bold()),
-                        Line::from(format!("Type '{name}' and press Enter (anything else cancels):")),
+                        Line::from(format!(
+                            "Type '{name}' and press Enter (anything else cancels):"
+                        )),
                         Line::from(format!("> {input}")),
                     ],
                     _ => vec![
@@ -805,13 +925,24 @@ impl App {
             Mode::ConfirmPrune => {
                 const SHOWN: usize = 8;
                 let missing = self.store.missing();
-                let mut lines =
-                    vec![Line::from(format!("Remove {} missing project(s) from Rattle?", missing.len()))];
-                lines.extend(missing.iter().take(SHOWN).map(|p| Line::from(format!("  {}", p.name)).dark_gray()));
+                let mut lines = vec![Line::from(format!(
+                    "Remove {} missing project(s) from Rattle?",
+                    missing.len()
+                ))];
+                lines.extend(
+                    missing
+                        .iter()
+                        .take(SHOWN)
+                        .map(|p| Line::from(format!("  {}", p.name)).dark_gray()),
+                );
                 if missing.len() > SHOWN {
-                    lines.push(Line::from(format!("  … and {} more", missing.len() - SHOWN)).dark_gray());
+                    lines.push(
+                        Line::from(format!("  … and {} more", missing.len() - SHOWN)).dark_gray(),
+                    );
                 }
-                lines.push(Line::from("Only entries are removed.  [y] yes  [any] no".dark_gray()));
+                lines.push(Line::from(
+                    "Only entries are removed.  [y] yes  [any] no".dark_gray(),
+                ));
                 let area = popup(f.area(), 50, lines.len() as u16 + 2);
                 f.render_widget(Clear, area);
                 f.render_widget(
@@ -860,7 +991,11 @@ impl App {
 
         let mut title = format!(" Projects ({}) ", self.visible.len());
         if !self.filter.is_empty() || matches!(self.mode, Mode::Filter) {
-            title = format!(" Projects ({}/{}) ", self.visible.len(), self.store.projects.len());
+            title = format!(
+                " Projects ({}/{}) ",
+                self.visible.len(),
+                self.store.projects.len()
+            );
         }
 
         if items.is_empty() {
@@ -887,7 +1022,10 @@ impl App {
 
     fn draw_footer(&self, f: &mut Frame, area: Rect) {
         let line = if matches!(self.mode, Mode::Filter) {
-            Line::from(vec![" / ".bold().reversed(), Span::raw(format!(" {}", self.filter))])
+            Line::from(vec![
+                " / ".bold().reversed(),
+                Span::raw(format!(" {}", self.filter)),
+            ])
         } else if let Some((msg, error)) = &self.status {
             let span = Span::raw(format!(" {msg}"));
             Line::from(if *error { span.red() } else { span.green() })
@@ -921,9 +1059,17 @@ fn draw_deps(f: &mut Frame, view: &DepsView) {
     let [body, footer] = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(inner);
 
     if view.deps.is_empty() {
-        f.render_widget(Paragraph::new("No dependencies yet. Press a to add one.".dark_gray()), body);
+        f.render_widget(
+            Paragraph::new("No dependencies yet. Press a to add one.".dark_gray()),
+            body,
+        );
     } else {
-        let width = view.deps.iter().map(|d| d.name.chars().count()).max().unwrap_or(0);
+        let width = view
+            .deps
+            .iter()
+            .map(|d| d.name.chars().count())
+            .max()
+            .unwrap_or(0);
         let items: Vec<ListItem> = view
             .deps
             .iter()
@@ -939,7 +1085,9 @@ fn draw_deps(f: &mut Frame, view: &DepsView) {
                 ListItem::new(Line::from(spans))
             })
             .collect();
-        let list = List::new(items).highlight_style(Style::new().reversed()).highlight_symbol("▶ ");
+        let list = List::new(items)
+            .highlight_style(Style::new().reversed())
+            .highlight_symbol("▶ ");
         f.render_stateful_widget(list, body, &mut view.list.clone());
     }
 
@@ -949,7 +1097,12 @@ fn draw_deps(f: &mut Frame, view: &DepsView) {
         f.set_cursor_position((x.min(footer.right().saturating_sub(1)), footer.y));
         Line::from(vec![label.bold(), Span::raw(text.clone())])
     } else if view.confirm_remove {
-        let name = view.list.selected().and_then(|i| view.deps.get(i)).map(|d| d.name.as_str()).unwrap_or("");
+        let name = view
+            .list
+            .selected()
+            .and_then(|i| view.deps.get(i))
+            .map(|d| d.name.as_str())
+            .unwrap_or("");
         Line::from(format!(" Remove {name}?  [y] yes  [any] no").red())
     } else if let Some((msg, error)) = &view.message {
         let span = Span::raw(format!(" {msg}"));
