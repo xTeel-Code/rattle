@@ -421,13 +421,14 @@ mod tests {
             },
             "top-level",
         );
-        // /tmp is /private/tmp on macOS: not top-level by depth, but outside home/scan dirs.
+        // /tmp is top-level on Linux, but /private/tmp on macOS, where only the
+        // home/scan-dir allow-list refuses it. Either way it must be refused.
         refused(
             Project {
                 name: "tmp".into(),
                 path: "/tmp".into(),
             },
-            "only folders inside",
+            "refusing to delete",
         );
         refused(
             Project {

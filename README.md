@@ -138,6 +138,18 @@ GUI editors (`zed`, `code`, `cursor`, `subl`, …) get `--wait` automatically wh
 editing the config, so Rattle reloads it once you close the file; projects opened
 with `e` don't wait.
 
+## Development
+```sh
+cargo fmt                              # format
+cargo clippy --all-targets             # lint
+cargo test                             # unit + end-to-end tests
+cargo test -- --ignored                # also tests that need network access
+```
+The end-to-end tests run the real binary in a throwaway home folder, so they
+never touch your `~/.rattle`. `tests/cli.rs` covers the commands and
+`tests/tui.rs` drives the TUI inside tmux (skipped when tmux isn't installed).
+CI runs all of this on Linux and macOS for every pull request.
+
 ## Roadmap
 - [x] Made Working MVP
 - [x] Rewritten in Rust

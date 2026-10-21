@@ -11,7 +11,8 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    disable_raw_mode, enable_raw_mode, Clear as ClearScreen, ClearType, EnterAlternateScreen,
+    LeaveAlternateScreen,
 };
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Style, Stylize};
@@ -722,8 +723,15 @@ impl App {
         restore()?;
         let status = cmd.status();
         enable_raw_mode()?;
-        execute!(io::stderr(), EnterAlternateScreen)?;
-        term.clear()?;
+        execute!(
+            io::stderr(),
+            EnterAlternateScreen,
+            ClearScreen(ClearType::All)
+        )?;
+        // Not `term.clear()`: it asks the terminal for the cursor position over
+        // stdout, which never answers when stdout is captured (`cd "$(rattle)"`).
+        // A fresh Terminal has empty buffers, so the next draw repaints everything.
+        *term = Terminal::new(CrosstermBackend::new(io::stderr()))?;
 
         match status {
             Ok(_) => Ok(true),
