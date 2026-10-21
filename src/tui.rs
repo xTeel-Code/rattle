@@ -81,7 +81,7 @@ pub fn run(file: &Path) -> Result<()> {
     }));
 
     let mut term = setup()?;
-    let result = app.event_loop(&mut term);
+    let result = app.auto_scan(&mut term).and_then(|()| app.event_loop(&mut term));
     restore()?;
     result?;
 
@@ -248,6 +248,21 @@ impl App {
         self.set_status(format!("added '{name}'"), false);
     }
 
+    /// Runs a scan before the first key press when `auto_scan` is on and
+    /// scan_dirs are set; stays quiet unless something was found or went wrong.
+    fn auto_scan(&mut self, term: &mut Term) -> Result<()> {
+        let config_file = self.file.with_file_name("config.toml");
+        let Ok(config) = Config::load(&config_file) else { return Ok(()) };
+        if !config.auto_scan || config.scan_dirs.is_empty() {
+            return Ok(());
+        }
+        self.set_status("scanning…", false);
+        term.draw(|f| self.draw(f))?;
+        self.status = None;
+        self.run_scan(&config, true);
+        Ok(())
+    }
+
     fn scan(&mut self) {
         let config_file = self.file.with_file_name("config.toml");
         let config = match Config::load(&config_file) {
@@ -258,13 +273,21 @@ impl App {
             let msg = format!("no scan_dirs set; add them in {}", config_file.display());
             return self.set_status(msg, true);
         }
-        let report = ops::scan_roots(&mut self.store, &config.scan_dirs, &config.markers);
+        self.run_scan(&config, false);
+    }
+
+    fn run_scan(&mut self, config: &Config, quiet: bool) {
+        let report = ops::scan_roots(&mut self.store, &config.scan_dirs, config);
         if !report.added.is_empty() {
             self.save();
         }
         self.refilter();
+        if quiet && report.added.is_empty() && report.warnings.is_empty() {
+            return;
+        }
         let mut msg = format!(
-            "scan: added {}, {} already registered",
+            "{}: added {}, {} already registered",
+            if quiet { "auto-scan" } else { "scan" },
             report.added.len(),
             report.already
         );
