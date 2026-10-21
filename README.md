@@ -25,8 +25,11 @@ Run `rattle` with no arguments (or `rattle tui`) to open the interactive browser
 | `e` | open the project in your editor (`editor` in config, else `$VISUAL` / `$EDITOR`) |
 | `c` | edit `config.toml` in your editor; reloads and rescans when you close it |
 | `,` | settings form: edit the config without leaving the TUI |
-| `?` | all keys |
+| `?` | all keys (`j`/`k` scroll in small terminals) |
 | `q` / `Esc` | quit |
+
+Templates (`n`) and package managers (`p`) run in the background with a
+spinner; `Esc` cancels them, including anything they started.
 
 The TUI draws on stderr, so you can jump straight into a project:
 ```sh

@@ -169,6 +169,16 @@ impl Tui {
     /// Starts `rattle` in tmux, or returns `None` (skipping the test) when
     /// tmux is missing. With `RATTLE_REQUIRE_TMUX=1` (set in CI) it panics instead.
     pub fn start(sb: &Sandbox, name: &str, extra_env: &[(&str, &str)]) -> Option<Tui> {
+        Self::start_sized(sb, name, extra_env, (120, 30))
+    }
+
+    /// Like [`Tui::start`], in a terminal of `(columns, rows)`.
+    pub fn start_sized(
+        sb: &Sandbox,
+        name: &str,
+        extra_env: &[(&str, &str)],
+        (columns, rows): (u16, u16),
+    ) -> Option<Tui> {
         if !Command::new("tmux")
             .arg("-V")
             .output()
@@ -202,7 +212,8 @@ impl Tui {
             .args(["-L", &socket, "kill-server"])
             .output();
         let started = Command::new("tmux")
-            .args(["-L", &socket, "new-session", "-d", "-x", "120", "-y", "30"])
+            .args(["-L", &socket, "new-session", "-d"])
+            .args(["-x", &columns.to_string(), "-y", &rows.to_string()])
             .arg(script)
             .current_dir(&sb.home)
             .status()

@@ -24,6 +24,13 @@ impl App {
         self.draw_list(f, body);
         self.draw_footer(f, footer);
 
+        // Keep the help scroll within what fits, so `k` responds right after
+        // scrolling past the end.
+        if let Mode::Help { scroll } = &mut self.mode {
+            let rows = help_rows(f.area());
+            *scroll = (*scroll).min(KEYS.len().saturating_sub(rows));
+        }
+
         match &self.mode {
             Mode::Add(input) => {
                 let area = popup(f.area(), 70, 3);
@@ -154,15 +161,26 @@ impl App {
                     area,
                 );
             }
-            Mode::Help => {
+            Mode::Help { scroll } => {
+                // As tall as the terminal allows; scroll with j/k when it doesn't fit.
                 let area = popup(f.area(), 60, KEYS.len() as u16 + 2);
-                f.render_widget(Clear, area);
+                let rows = help_rows(f.area());
+                let max_scroll = KEYS.len().saturating_sub(rows);
+                let mut title = " Keys ".to_string();
+                if max_scroll > 0 {
+                    let up = if *scroll > 0 { "↑" } else { " " };
+                    let down = if *scroll < max_scroll { "↓" } else { " " };
+                    title.push_str(&format!("{up}{down} j/k "));
+                }
                 let lines: Vec<Line> = KEYS
                     .iter()
+                    .skip(*scroll)
+                    .take(rows)
                     .map(|(k, d)| Line::from(vec![format!(" {k:<10}").bold(), Span::raw(*d)]))
                     .collect();
+                f.render_widget(Clear, area);
                 f.render_widget(
-                    Paragraph::new(lines).block(Block::bordered().title(" Keys ")),
+                    Paragraph::new(lines).block(Block::bordered().title(title)),
                     area,
                 );
             }
@@ -237,17 +255,56 @@ impl App {
             Line::from(if *error { span.red() } else { span.green() })
         } else {
             let mut spans = Vec::new();
+            let mut width = usize::from(area.width);
             if !self.filter.is_empty() {
-                spans.push(format!(" filter: {} ", self.filter).yellow());
+                let filter = format!(" filter: {} ", self.filter);
+                width = width.saturating_sub(filter.chars().count());
+                spans.push(filter.yellow());
             }
-            spans.push(
-                " Enter cd · / filter · a add · n new · p deps · s scan · e edit · , settings · ? all keys · q quit"
-                    .dark_gray(),
-            );
+            spans.push(fit_hints(width, FOOTER_HINTS).dark_gray());
             Line::from(spans)
         };
         f.render_widget(line, area);
     }
+}
+
+/// How many key rows the help popup can show in `screen`.
+fn help_rows(screen: Rect) -> usize {
+    let area = popup(screen, 60, KEYS.len() as u16 + 2);
+    usize::from(area.height.saturating_sub(2)).max(1)
+}
+
+/// Footer hints with a priority (0 = always shown), in display order.
+const FOOTER_HINTS: &[(&str, u8)] = &[
+    ("Enter cd", 0),
+    ("/ filter", 1),
+    ("a add", 3),
+    ("n new", 3),
+    ("p deps", 3),
+    ("s scan", 2),
+    ("e edit", 2),
+    (", settings", 3),
+    ("? keys", 0),
+    ("q quit", 0),
+];
+
+/// The most hints that fit in `width` columns: lower-priority ones go first,
+/// the rest keep their order.
+fn fit_hints(width: usize, hints: &[(&str, u8)]) -> String {
+    let max = hints.iter().map(|(_, p)| *p).max().unwrap_or(0);
+    let line = |limit: u8| {
+        let shown: Vec<&str> = hints
+            .iter()
+            .filter(|(_, p)| *p <= limit)
+            .map(|(h, _)| *h)
+            .collect();
+        format!(" {}", shown.join(" · "))
+    };
+    (0..=max)
+        .rev()
+        .map(line)
+        .find(|l| l.chars().count() <= width)
+        .unwrap_or_else(|| line(0))
 }
 
 /// Rows a bordered paragraph of `lines` needs at `width` columns, wrapping included.
@@ -266,5 +323,30 @@ pub(super) fn popup(area: Rect, percent_x: u16, height: u16) -> Rect {
         y: area.y + (area.height - height) / 2,
         width,
         height,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn footer_drops_low_priority_hints_first() {
+        let full = fit_hints(200, FOOTER_HINTS);
+        assert!(
+            full.contains(", settings") && full.contains("q quit"),
+            "{full}"
+        );
+        assert_eq!(
+            fit_hints(40, FOOTER_HINTS),
+            " Enter cd · / filter · ? keys · q quit"
+        );
+        let essentials = fit_hints(0, FOOTER_HINTS);
+        assert_eq!(essentials, " Enter cd · ? keys · q quit", "always shown");
+        for width in 0..120 {
+            let line = fit_hints(width, FOOTER_HINTS);
+            let limit = width.max(essentials.chars().count());
+            assert!(line.chars().count() <= limit, "{width}: {line}");
+        }
     }
 }

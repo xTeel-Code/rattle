@@ -90,7 +90,10 @@ enum Mode {
     Deps(Box<DepsView>),
     /// `,`: the settings form.
     Settings(Box<SettingsForm>),
-    Help,
+    /// `?`: the key list, scrolled by `scroll` rows when it doesn't fit.
+    Help {
+        scroll: usize,
+    },
 }
 
 struct App {
@@ -244,7 +247,12 @@ impl App {
         }
         let selected_name = self.selected().map(|i| self.store.projects[i].name.clone());
         match &mut self.mode {
-            Mode::Help => self.mode = Mode::Normal,
+            // j/k scroll (draw clamps it to what fits); any other key closes.
+            Mode::Help { scroll } => match key.code {
+                KeyCode::Down | KeyCode::Char('j') => *scroll += 1,
+                KeyCode::Up | KeyCode::Char('k') => *scroll = scroll.saturating_sub(1),
+                _ => self.mode = Mode::Normal,
+            },
             Mode::ConfirmDelete => {
                 if matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y')) {
                     if let Some(i) = self.selected() {
@@ -400,7 +408,7 @@ impl App {
             KeyCode::End | KeyCode::Char('G') => self.list.select_last(),
             KeyCode::Char('/') => self.mode = Mode::Filter,
             KeyCode::Char('a') => self.mode = Mode::Add(String::new()),
-            KeyCode::Char('?') => self.mode = Mode::Help,
+            KeyCode::Char('?') => self.mode = Mode::Help { scroll: 0 },
             KeyCode::Char('s') => self.scan(),
             KeyCode::Char('d') | KeyCode::Delete if self.selected().is_some() => {
                 self.mode = Mode::ConfirmDelete

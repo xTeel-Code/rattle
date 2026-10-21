@@ -403,6 +403,35 @@ fn e_opens_the_editor_in_the_project_and_comes_back() {
     assert_eq!(tui.wait_exit(), format!("{alpha}\nEXIT=0\n"));
 }
 
+/// In a short terminal the key list scrolls; in a narrow one the footer keeps
+/// the essential hints instead of being cut off.
+#[test]
+fn help_scrolls_and_footer_fits_in_a_small_terminal() {
+    let sb = Sandbox::new("tui-small");
+    let Some(tui) = Tui::start_sized(&sb, "small", &[], (50, 12)) else {
+        return;
+    };
+    let screen = tui.wait_for("No projects yet");
+    let footer = screen.lines().last().unwrap_or_default();
+    assert!(
+        footer.contains("? keys") && footer.contains("q quit") && !footer.contains(", settings"),
+        "footer: {footer:?}"
+    );
+
+    tui.keys(&["?"]);
+    tui.wait_for(" ↓ j/k ");
+    for _ in 0..30 {
+        tui.keys(&["j"]); // past the end: clamped
+    }
+    tui.wait_for("q / Esc");
+    tui.wait_for("↑  j/k");
+    tui.keys(&["k"]);
+    tui.wait_for("↑↓ j/k"); // one step back up works at once
+    tui.keys(&["x"]); // any other key closes
+    tui.wait_for("No projects yet");
+    assert!(!tui.screen().contains(" Keys "));
+}
+
 #[test]
 fn help_lists_all_keys() {
     let sb = Sandbox::new("tui-help");
