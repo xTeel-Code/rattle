@@ -4,7 +4,7 @@
 //! replaced by the project name and the command must create `{name}/`.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
 
 use crate::config::Config;
 use crate::ops;
@@ -97,14 +97,21 @@ pub fn parent_dir(config: &Config, explicit: Option<&str>) -> Result<PathBuf, St
     Ok(ops::expand_tilde(&raw))
 }
 
-/// Runs `template` to create `parent/name`, then registers it in `store`
-/// (the caller saves). Fails if the folder already exists or the command fails.
-pub fn create(
-    store: &mut Store,
+/// A checked template run: the shell command and the folder it must create.
+pub struct Prepared {
+    pub command: Command,
+    pub target: PathBuf,
+    pub template: String,
+}
+
+/// Checks everything that can be checked before running `template`
+/// (name, duplicates, existing folder) and builds its command.
+pub fn prepare(
+    store: &Store,
     template: &Template,
     name: &str,
     parent: &Path,
-) -> Result<Project, String> {
+) -> Result<Prepared, String> {
     validate_name(name)?;
     if store.find(name).is_some() {
         return Err(format!("a project named '{name}' is already registered"));
@@ -117,14 +124,44 @@ pub fn create(
     }
 
     // validate_name() keeps the name shell-safe; quote it anyway.
-    let command = template.command.replace("{name}", &format!("'{name}'"));
-    let output = Command::new("sh")
+    let mut command = Command::new("sh");
+    command
         .arg("-c")
-        .arg(&command)
+        .arg(template.command.replace("{name}", &format!("'{name}'")))
         .current_dir(parent)
-        .stdin(Stdio::null())
+        .stdin(Stdio::null());
+    Ok(Prepared {
+        command,
+        target,
+        template: template.name.clone(),
+    })
+}
+
+/// Runs `template` to create `parent/name`, then registers it in `store`
+/// (the caller saves). Fails if the folder already exists or the command fails.
+/// The CLI and TUI run the steps themselves, to report progress in between.
+#[cfg(test)]
+pub fn create(
+    store: &mut Store,
+    template: &Template,
+    name: &str,
+    parent: &Path,
+) -> Result<Project, String> {
+    let mut prepared = prepare(store, template, name, parent)?;
+    let output = prepared
+        .command
         .output()
         .map_err(|e| format!("could not run template '{}': {e}", template.name))?;
+    finish(store, &prepared.template, &prepared.target, &output)
+}
+
+/// Checks a finished template run and registers the project it created.
+pub fn finish(
+    store: &mut Store,
+    template: &str,
+    target: &Path,
+    output: &Output,
+) -> Result<Project, String> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let reason = stderr
@@ -133,14 +170,13 @@ pub fn create(
             .find(|l| !l.trim().is_empty())
             .unwrap_or("no error output");
         return Err(format!(
-            "template '{}' failed ({}): {reason}",
-            template.name, output.status
+            "template '{template}' failed ({}): {reason}",
+            output.status
         ));
     }
     if !target.is_dir() {
         return Err(format!(
-            "template '{}' finished but did not create {}",
-            template.name,
+            "template '{template}' finished but did not create {}",
             target.display()
         ));
     }

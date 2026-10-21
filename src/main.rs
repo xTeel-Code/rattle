@@ -341,12 +341,18 @@ fn new_project(file: &Path, args: &[String]) -> Result<()> {
     let parent = templates::parent_dir(&config, parent.as_deref())?;
 
     let mut store = Store::load(file)?;
+    // Check first, so "Creating…" is only printed when it is really going to run.
+    let mut prepared = templates::prepare(&store, &template, &name, &parent)?;
     println!(
         "Creating '{name}' in {} with template '{}'…",
         parent.display(),
         template.name
     );
-    let project = templates::create(&mut store, &template, &name, &parent)?;
+    let output = prepared
+        .command
+        .output()
+        .map_err(|e| format!("could not run template '{}': {e}", template.name))?;
+    let project = templates::finish(&mut store, &template.name, &prepared.target, &output)?;
     store.save(file)?;
     println!("Created and added '{}' -> {}", project.name, project.path);
     Ok(())

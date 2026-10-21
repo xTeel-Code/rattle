@@ -199,10 +199,13 @@ fn new_projects_from_templates() {
             "{bad}"
         );
     }
-    assert!(sb
-        .run(&["new", "plain", "-t", "empty"])
-        .err()
-        .contains("already registered"));
+    let dup = sb.run(&["new", "plain", "-t", "empty"]);
+    assert!(
+        !dup.stdout.contains("Creating"),
+        "refused before announcing: {}",
+        dup.stdout
+    );
+    assert!(dup.err().contains("already registered"));
     assert!(sb
         .run(&["new", "x", "-t", "nope"])
         .err()
