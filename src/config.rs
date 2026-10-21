@@ -60,6 +60,11 @@ max_depth = 3
 # Rescan scan_dirs every time the TUI opens.
 auto_scan = true
 
+# Editor for `e` (open a project) and `c` (edit this file).
+# Defaults to $VISUAL, then $EDITOR, then vi. GUI editors need their wait
+# flag so Rattle knows when you are done, e.g. \"code -w\" or \"zed -w\".
+# editor = \"hx\"
+
 # Uncomment to override the defaults shown here.
 # A folder counts as a project if it contains any of these.
 # markers = [\".git\", \"Cargo.toml\", \"pyproject.toml\", \"package.json\", \"go.mod\",
@@ -76,6 +81,8 @@ pub struct Config {
     pub auto_scan: bool,
     pub markers: Vec<String>,
     pub ignore: Vec<String>,
+    /// Overrides `$VISUAL` / `$EDITOR` when set.
+    pub editor: Option<String>,
 }
 
 impl Default for Config {
@@ -86,6 +93,7 @@ impl Default for Config {
             auto_scan: true,
             markers: DEFAULT_MARKERS.iter().map(|m| m.to_string()).collect(),
             ignore: DEFAULT_IGNORE.iter().map(|m| m.to_string()).collect(),
+            editor: None,
         }
     }
 }
@@ -131,7 +139,13 @@ impl Config {
                 continue;
             }
             match key.as_str() {
-                "scan_dirs" => config.scan_dirs = parse_list(&value),
+                "scan_dirs" => {
+                    config.scan_dirs = parse_list(&value).into_iter().map(home_relative).collect()
+                }
+                "editor" => {
+                    let editor = unquote(&value);
+                    config.editor = (!editor.trim().is_empty()).then_some(editor);
+                }
                 "markers" => config.markers = parse_list(&value),
                 "ignore" => config.ignore = parse_list(&value),
                 "max_depth" => {
@@ -161,6 +175,15 @@ fn parse_list(value: &str) -> Vec<String> {
         .map(|item| unquote(item.trim()))
         .filter(|item| !item.is_empty())
         .collect()
+}
+
+/// Relative scan dirs mean "under home", not "under wherever rattle was started".
+fn home_relative(dir: String) -> String {
+    if dir.starts_with('/') || dir.starts_with('~') {
+        dir
+    } else {
+        format!("~/{dir}")
+    }
 }
 
 /// Drops a trailing `# comment`, ignoring `#` inside quoted strings.
@@ -201,5 +224,18 @@ mod tests {
 
         let c = Config::parse("max_depth = deep\nauto_scan = maybe\n");
         assert_eq!((c.max_depth, c.auto_scan), (DEFAULT_MAX_DEPTH, true));
+    }
+
+    #[test]
+    fn parses_editor() {
+        assert_eq!(Config::parse("editor = \"code -w\"\n").editor.as_deref(), Some("code -w"));
+        assert_eq!(Config::parse("editor = \"\"\n").editor, None);
+        assert_eq!(Config::parse("# editor = \"hx\"\n").editor, None);
+    }
+
+    #[test]
+    fn relative_scan_dirs_are_under_home() {
+        let c = Config::parse("scan_dirs = [\"Documents\", \"~/code\", \"/srv\"]\n");
+        assert_eq!(c.scan_dirs, vec!["~/Documents", "~/code", "/srv"]);
     }
 }

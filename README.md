@@ -18,7 +18,7 @@ Run `rattle` with no arguments (or `rattle tui`) to open the interactive browser
 | `a` | add a project folder |
 | `d` | delete the entry (files on disk are kept) |
 | `s` | scan the `scan_dirs` from `config.toml` |
-| `e` | open the project in `$VISUAL` / `$EDITOR` |
+| `e` | open the project in your editor (`editor` in config, else `$VISUAL` / `$EDITOR`) |
 | `c` | edit `config.toml` in your editor; reloads and rescans when you close it |
 | `?` | key help |
 | `q` / `Esc` | quit |
@@ -74,7 +74,13 @@ auto_scan = true       # rescan when the TUI opens
 # optional, replace the defaults
 markers = [".git", "Cargo.toml"]
 ignore = ["node_modules", "target"]
+# editor for `e` and `c`; overrides $VISUAL / $EDITOR
+editor = "hx"
 ```
+Relative `scan_dirs` such as `"Documents"` mean `~/Documents`.
+GUI editors need their wait flag (`"code -w"`, `"zed -w"`) so Rattle knows when
+you have finished editing the config.
+
 Edit it with `c` in the TUI or `rattle config` in the shell.
 
 ## Roadmap

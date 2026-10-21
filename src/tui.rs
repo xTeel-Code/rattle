@@ -34,7 +34,7 @@ const KEYS: &[(&str, &str)] = &[
     ("a", "add project folder"),
     ("d", "delete entry (files are kept)"),
     ("s", "scan folders from config.toml"),
-    ("e", "open in $EDITOR"),
+    ("e", "open in editor (config, $VISUAL, $EDITOR)"),
     ("c", "edit config.toml (reloads & rescans)"),
     ("?", "toggle this help"),
     ("q / Esc", "quit"),
@@ -321,7 +321,9 @@ impl App {
     /// Suspends the TUI, runs the editor on `target` inside `dir`, then restores
     /// the TUI. Returns whether the editor could be started.
     fn open_editor(&mut self, dir: &Path, target: &Path, term: &mut Term) -> Result<bool> {
-        let (mut cmd, editor) = ops::editor_command(dir, target);
+        // Read on every use so a changed `editor` setting applies without a restart.
+        let configured = Config::load(&config::path_for(&self.file)).ok().and_then(|c| c.editor);
+        let (mut cmd, editor) = ops::editor_command(configured.as_deref(), dir, target);
         restore()?;
         let status = cmd.status();
         enable_raw_mode()?;
