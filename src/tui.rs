@@ -22,6 +22,7 @@ use ratatui::{Frame, Terminal};
 use crate::config::{self, Config, DeleteFiles};
 use crate::deps::{self, Dep, Manager};
 use crate::ops;
+use crate::settings::{FormAction, SettingsForm};
 use crate::store::Store;
 use crate::templates::{self, Template};
 
@@ -41,6 +42,7 @@ const KEYS: &[(&str, &str)] = &[
     ("s", "scan folders from config.toml"),
     ("e", "open in editor (config, $VISUAL, $EDITOR)"),
     ("c", "edit config.toml (reloads & rescans)"),
+    (",", "settings form"),
     ("X", "remove entries whose folder is gone"),
     ("?", "toggle this help"),
     ("q / Esc", "quit"),
@@ -66,6 +68,8 @@ enum Mode {
     NewTemplate { name: String, parent: PathBuf, templates: Vec<Template>, list: ListState },
     /// `p`: the selected project's dependencies.
     Deps(Box<DepsView>),
+    /// `,`: the settings form.
+    Settings(Box<SettingsForm>),
     Help,
 }
 
@@ -330,6 +334,14 @@ impl App {
                     self.set_status("cancelled; nothing was deleted", false);
                 }
             }
+            Mode::Settings(form) => match form.on_key(key) {
+                FormAction::Nothing => {}
+                FormAction::Close => self.mode = Mode::Normal,
+                FormAction::Save(changes) => {
+                    self.mode = Mode::Normal;
+                    self.save_settings(&changes, term)?;
+                }
+            },
             Mode::Deps(view) => match view.on_key(key) {
                 DepsAction::Nothing => {}
                 DepsAction::Close => self.mode = Mode::Normal,
@@ -433,6 +445,10 @@ impl App {
                 }
             }
             KeyCode::Char('c') => self.edit_config(term)?,
+            KeyCode::Char(',') => match Config::load(&config::path_for(&self.file)) {
+                Ok(config) => self.mode = Mode::Settings(Box::new(SettingsForm::new(&config))),
+                Err(e) => self.set_status(format!("cannot read config: {e}"), true),
+            },
             KeyCode::Char('D') => self.start_delete_files(),
             KeyCode::Char('p') => {
                 if let Some(i) = self.selected() {
@@ -641,28 +657,41 @@ impl App {
             return Ok(());
         }
         let dir = config_file.parent().unwrap_or(Path::new(".")).to_path_buf();
-        if !self.open_editor(&dir, &config_file, true, term)? {
+        if self.open_editor(&dir, &config_file, true, term)? {
+            self.reload_config("config reloaded");
+        }
+        Ok(())
+    }
+
+    /// Writes the settings form's changes into config.toml, then reloads.
+    fn save_settings(&mut self, changes: &[(&str, String)], term: &mut Term) -> Result<()> {
+        if let Err(e) = config::save_values(&config::path_for(&self.file), changes) {
+            self.set_status(format!("could not save settings: {e}"), true);
             return Ok(());
         }
+        self.set_status("saved; scanning…", false);
+        term.draw(|f| self.draw(f))?;
+        self.reload_config(&format!("settings saved ({} changed)", changes.len()));
+        Ok(())
+    }
 
-        let config = match Config::load(&config_file) {
+    /// Rereads config.toml after it changed and rescans when auto_scan is on,
+    /// so e.g. new scan_dirs show up immediately. `done` starts the status line.
+    fn reload_config(&mut self, done: &str) {
+        let config = match Config::load(&config::path_for(&self.file)) {
             Ok(c) => c,
-            Err(e) => {
-                self.set_status(format!("cannot read config: {e}"), true);
-                return Ok(());
-            }
+            Err(e) => return self.set_status(format!("cannot read config: {e}"), true),
         };
         if config.scan_dirs.is_empty() {
-            self.set_status("config reloaded; set scan_dirs to find projects automatically", false);
+            self.set_status(format!("{done}; set scan_dirs to find projects automatically"), false);
         } else if config.auto_scan {
             self.run_scan(&config, false);
             if let Some((msg, _)) = &mut self.status {
-                *msg = format!("config reloaded · {msg}");
+                *msg = format!("{done} · {msg}");
             }
         } else {
-            self.set_status("config reloaded (auto_scan is off; press s to scan)", false);
+            self.set_status(format!("{done} (auto_scan is off; press s to scan)"), false);
         }
-        Ok(())
     }
 
     fn draw(&mut self, f: &mut Frame) {
@@ -711,6 +740,11 @@ impl App {
                 );
             }
             Mode::Deps(view) => draw_deps(f, view),
+            Mode::Settings(form) => {
+                let area = popup(f.area(), 85, form.height());
+                f.render_widget(Clear, area);
+                form.draw(f, area);
+            }
             Mode::NewName { input, parent } => {
                 let area = popup(f.area(), 70, 3);
                 f.render_widget(Clear, area);
@@ -862,7 +896,7 @@ impl App {
                 spans.push(format!(" filter: {} ", self.filter).yellow());
             }
             spans.push(
-                " Enter cd · / filter · a add · d delete · s scan · e edit · c config · ? help · q quit"
+                " Enter cd · / filter · a add · n new · p deps · s scan · e edit · , settings · ? all keys · q quit"
                     .dark_gray(),
             );
             Line::from(spans)

@@ -238,6 +238,115 @@ impl Config {
     }
 }
 
+/// Writes `updates` (key, already-formatted TOML value) into the config file,
+/// keeping comments and every other line as they are.
+pub fn save_values(file: &Path, updates: &[(&str, String)]) -> io::Result<()> {
+    let text = fs::read_to_string(file).unwrap_or_default();
+    let tmp = file.with_extension("toml.tmp");
+    fs::write(&tmp, set_values(&text, updates))?;
+    fs::rename(tmp, file)
+}
+
+/// Replaces each top-level `key = …` line (including multi-line arrays) with
+/// the new value, or adds it before the first `[table]` if the key is absent.
+pub fn set_values(text: &str, updates: &[(&str, String)]) -> String {
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    for (key, value) in updates {
+        let new_line = format!("{key} = {value}");
+        match find_top_level_key(&lines, key) {
+            Some((start, end)) => {
+                lines.splice(start..=end, [new_line]);
+            }
+            None => {
+                // Next to its commented-out example (`# editor = "hx"`) if there is one.
+                let header = first_table_header(&lines).unwrap_or(lines.len());
+                let example = lines[..header].iter().position(|l| {
+                    l.trim_start().strip_prefix('#').is_some_and(|rest| {
+                        rest.trim_start().strip_prefix(key).is_some_and(|r| r.trim_start().starts_with('='))
+                    })
+                });
+                lines.insert(example.map_or(header, |i| i + 1), new_line);
+            }
+        }
+    }
+    let mut out = lines.join("\n");
+    out.push('\n');
+    out
+}
+
+/// Line range (first, last) of `key`'s top-level assignment.
+fn find_top_level_key(lines: &[String], key: &str) -> Option<(usize, usize)> {
+    let mut depth = 0i32;
+    for (i, raw) in lines.iter().enumerate() {
+        let line = strip_comment(raw).trim();
+        if depth > 0 {
+            depth += bracket_balance(line);
+            continue;
+        }
+        if is_table_header(line) {
+            return None;
+        }
+        let Some((k, v)) = line.split_once('=') else { continue };
+        let balance = bracket_balance(v);
+        if unquote(k.trim()) == *key {
+            // Extend over the rest of a multi-line array.
+            let mut end = i;
+            let mut open = balance;
+            while open > 0 && end + 1 < lines.len() {
+                end += 1;
+                open += bracket_balance(strip_comment(&lines[end]));
+            }
+            return Some((i, end));
+        }
+        depth = balance.max(0);
+    }
+    None
+}
+
+fn first_table_header(lines: &[String]) -> Option<usize> {
+    let mut depth = 0i32;
+    for (i, raw) in lines.iter().enumerate() {
+        let line = strip_comment(raw).trim();
+        if depth > 0 {
+            depth += bracket_balance(line);
+        } else if is_table_header(line) {
+            return Some(i);
+        } else if let Some((_, v)) = line.split_once('=') {
+            depth = bracket_balance(v).max(0);
+        }
+    }
+    None
+}
+
+fn is_table_header(line: &str) -> bool {
+    line.starts_with('[') && line.ends_with(']') && !line.contains('=')
+}
+
+/// `[` minus `]` outside of strings.
+fn bracket_balance(s: &str) -> i32 {
+    let mut in_str = false;
+    s.chars().fold(0, |n, c| match c {
+        '"' => {
+            in_str = !in_str;
+            n
+        }
+        '[' if !in_str => n + 1,
+        ']' if !in_str => n - 1,
+        _ => n,
+    })
+}
+
+/// A TOML string literal.
+pub fn toml_string(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+/// A TOML array of strings.
+pub fn toml_list(items: &[String]) -> String {
+    let items: Vec<String> = items.iter().map(|i| toml_string(i)).collect();
+    format!("[{}]", items.join(", "))
+}
+
 fn parse_list(value: &str) -> Vec<String> {
     let inner = value
         .strip_prefix('[')
@@ -329,6 +438,44 @@ mod tests {
                 ("web".to_string(), "pnpm create vite {name}".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn set_values_keeps_comments_and_handles_multiline_arrays() {
+        let text = "# my roots\nscan_dirs = [\n  \"~/a\",\n  \"~/b\",\n]\n# depth\nmax_depth = 3 # comment\n\
+                    # editor = \"hx\"\n[templates]\nweb = \"x {name}\"\n";
+        let out = set_values(
+            text,
+            &[
+                ("scan_dirs", toml_list(&["~/code".to_string()])),
+                ("max_depth", "5".into()),
+                ("editor", toml_string("zed")),
+            ],
+        );
+        assert_eq!(
+            out,
+            "# my roots\nscan_dirs = [\"~/code\"]\n# depth\nmax_depth = 5\n# editor = \"hx\"\n\
+             editor = \"zed\"\n[templates]\nweb = \"x {name}\"\n"
+        );
+        let c = Config::parse(&out);
+        assert_eq!((c.scan_dirs, c.max_depth, c.editor.as_deref()), (vec!["~/code".to_string()], 5, Some("zed")));
+        assert_eq!(c.templates, vec![("web".to_string(), "x {name}".to_string())]);
+    }
+
+    #[test]
+    fn set_values_inserts_below_commented_example() {
+        let out = set_values(
+            "# Editor help.\n# editor = \"hx\"\n\n# editors_note = 1\nmax_depth = 3\n",
+            &[("editor", toml_string("zed"))],
+        );
+        assert_eq!(out, "# Editor help.\n# editor = \"hx\"\neditor = \"zed\"\n\n# editors_note = 1\nmax_depth = 3\n");
+    }
+
+    #[test]
+    fn set_values_appends_when_missing_and_ignores_table_keys() {
+        let out = set_values("[templates]\nauto_scan = \"not top level\"\n", &[("auto_scan", "false".into())]);
+        assert_eq!(out, "auto_scan = false\n[templates]\nauto_scan = \"not top level\"\n");
+        assert_eq!(set_values("", &[("max_depth", "2".into())]), "max_depth = 2\n");
     }
 
     #[test]

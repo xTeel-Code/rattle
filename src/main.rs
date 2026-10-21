@@ -1,6 +1,7 @@
 mod config;
 mod deps;
 mod ops;
+mod settings;
 mod store;
 mod templates;
 mod tui;
