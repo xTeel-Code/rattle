@@ -118,7 +118,13 @@ impl SettingsForm {
         ];
         let mut list = ListState::default();
         list.select(Some(0));
-        Self { fields, list, editing: None, message: None, confirm_discard: false }
+        Self {
+            fields,
+            list,
+            editing: None,
+            message: None,
+            confirm_discard: false,
+        }
     }
 
     /// Changed fields as (key, TOML value).
@@ -129,7 +135,11 @@ impl SettingsForm {
             .map(|f| {
                 let value = match f.kind {
                     Kind::List => toml_list(
-                        &f.value.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect::<Vec<_>>(),
+                        &f.value
+                            .split(',')
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                            .collect::<Vec<_>>(),
                     ),
                     Kind::Text(_) | Kind::Choice(_) => toml_string(f.value.trim()),
                     Kind::Number | Kind::Bool => f.value.clone(),
@@ -155,7 +165,9 @@ impl SettingsForm {
                 KeyCode::Enter => {
                     let buf = buf.trim().to_string();
                     let field = self.selected();
-                    if matches!(field.kind, Kind::Number) && !buf.parse::<usize>().is_ok_and(|n| n >= 1) {
+                    if matches!(field.kind, Kind::Number)
+                        && !buf.parse::<usize>().is_ok_and(|n| n >= 1)
+                    {
                         self.message = Some(("enter a whole number of at least 1".into(), true));
                         return FormAction::Nothing;
                     }
@@ -185,7 +197,10 @@ impl SettingsForm {
                     return FormAction::Close;
                 }
                 self.confirm_discard = true;
-                self.message = Some(("unsaved changes: s saves, Esc again discards them".into(), true));
+                self.message = Some((
+                    "unsaved changes: s saves, Esc again discards them".into(),
+                    true,
+                ));
             }
             KeyCode::Down | KeyCode::Char('j') => self.list.select_next(),
             KeyCode::Up | KeyCode::Char('k') => self.list.select_previous(),
@@ -209,8 +224,12 @@ impl SettingsForm {
         let block = Block::bordered().title(" Settings · config.toml ");
         let inner = block.inner(area);
         f.render_widget(block, area);
-        let [body, help, footer] =
-            Layout::vertical([Constraint::Min(0), Constraint::Length(2), Constraint::Length(1)]).areas(inner);
+        let [body, help, footer] = Layout::vertical([
+            Constraint::Min(0),
+            Constraint::Length(2),
+            Constraint::Length(1),
+        ])
+        .areas(inner);
 
         let label_width = self.fields.iter().map(|f| f.label.len()).max().unwrap_or(0);
         let selected = self.list.selected().unwrap_or(0);
@@ -219,7 +238,11 @@ impl SettingsForm {
             .iter()
             .enumerate()
             .map(|(i, field)| {
-                let changed = if field.value != field.original { "*" } else { " " };
+                let changed = if field.value != field.original {
+                    "*"
+                } else {
+                    " "
+                };
                 let mut spans = vec![
                     Span::raw(changed).yellow(),
                     Span::raw(format!("{:<label_width$}  ", field.label)).bold(),
@@ -238,11 +261,16 @@ impl SettingsForm {
                 ListItem::new(Line::from(spans))
             })
             .collect();
-        let list = List::new(items).highlight_style(Style::new().reversed()).highlight_symbol("▶ ");
+        let list = List::new(items)
+            .highlight_style(Style::new().reversed())
+            .highlight_symbol("▶ ");
         f.render_stateful_widget(list, body, &mut self.list.clone());
 
         let help_text = self.fields.get(selected).map(|f| f.help).unwrap_or("");
-        f.render_widget(Paragraph::new(help_text.dark_gray()).wrap(Wrap { trim: true }), help);
+        f.render_widget(
+            Paragraph::new(help_text.dark_gray()).wrap(Wrap { trim: true }),
+            help,
+        );
 
         let line = match (&self.message, &self.editing) {
             (Some((msg, error)), _) => {
@@ -250,7 +278,9 @@ impl SettingsForm {
                 Line::from(if *error { span.red() } else { span.green() })
             }
             (None, Some(_)) => Line::from(" Enter keep · Esc cancel edit".dark_gray()),
-            (None, None) => Line::from(" Enter edit / toggle · s save · Esc close · templates: edit with c".dark_gray()),
+            (None, None) => Line::from(
+                " Enter edit / toggle · s save · Esc close · templates: edit with c".dark_gray(),
+            ),
         };
         f.render_widget(line, footer);
     }
@@ -290,7 +320,10 @@ mod tests {
         press(&mut form, KeyCode::Backspace);
         type_text(&mut form, "0");
         press(&mut form, KeyCode::Enter);
-        assert!(form.editing.is_some(), "0 is rejected and editing continues");
+        assert!(
+            form.editing.is_some(),
+            "0 is rejected and editing continues"
+        );
         press(&mut form, KeyCode::Backspace);
         type_text(&mut form, "4");
         press(&mut form, KeyCode::Enter);
@@ -301,7 +334,9 @@ mod tests {
         press(&mut form, KeyCode::Down);
         press(&mut form, KeyCode::Enter);
 
-        let FormAction::Save(changes) = press(&mut form, KeyCode::Char('s')) else { panic!("expected save") };
+        let FormAction::Save(changes) = press(&mut form, KeyCode::Char('s')) else {
+            panic!("expected save")
+        };
         assert_eq!(
             changes,
             vec![
@@ -316,12 +351,18 @@ mod tests {
     #[test]
     fn escape_with_changes_asks_before_discarding() {
         let mut form = SettingsForm::new(&Config::default());
-        assert!(matches!(press(&mut form, KeyCode::Char('s')), FormAction::Nothing), "nothing to save");
+        assert!(
+            matches!(press(&mut form, KeyCode::Char('s')), FormAction::Nothing),
+            "nothing to save"
+        );
         for _ in 0..3 {
             press(&mut form, KeyCode::Down);
         }
         press(&mut form, KeyCode::Enter); // toggle auto_scan
-        assert!(matches!(press(&mut form, KeyCode::Esc), FormAction::Nothing));
+        assert!(matches!(
+            press(&mut form, KeyCode::Esc),
+            FormAction::Nothing
+        ));
         assert!(form.confirm_discard);
         assert!(matches!(press(&mut form, KeyCode::Esc), FormAction::Close));
     }

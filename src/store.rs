@@ -57,7 +57,10 @@ impl Store {
             } else if let Some((key, value)) = line.split_once('=') {
                 if key.trim() == "path" {
                     if let Some(name) = current.take() {
-                        projects.push(Project { name, path: unquote(value.trim()) });
+                        projects.push(Project {
+                            name,
+                            path: unquote(value.trim()),
+                        });
                     }
                 }
             }
@@ -92,7 +95,10 @@ impl Store {
 
     /// Projects whose folder no longer exists.
     pub fn missing(&self) -> Vec<&Project> {
-        self.projects.iter().filter(|p| !Path::new(&p.path).is_dir()).collect()
+        self.projects
+            .iter()
+            .filter(|p| !Path::new(&p.path).is_dir())
+            .collect()
     }
 
     /// Removes the entries of projects whose folder no longer exists.
@@ -119,8 +125,14 @@ pub fn home_dir() -> PathBuf {
 
 fn key(name: &str) -> String {
     let bare = !name.is_empty()
-        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
-    if bare { name.to_string() } else { quote(name) }
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if bare {
+        name.to_string()
+    } else {
+        quote(name)
+    }
 }
 
 fn quote(s: &str) -> String {
@@ -139,13 +151,19 @@ mod tests {
     use super::*;
 
     fn p(name: &str, path: &str) -> Project {
-        Project { name: name.into(), path: path.into() }
+        Project {
+            name: name.into(),
+            path: path.into(),
+        }
     }
 
     #[test]
     fn parses_legacy_python_format() {
         let s = Store::parse("[foo]\npath=/home/me/foo\n[bar]\npath=/home/me/bar");
-        assert_eq!(s.projects, vec![p("foo", "/home/me/foo"), p("bar", "/home/me/bar")]);
+        assert_eq!(
+            s.projects,
+            vec![p("foo", "/home/me/foo"), p("bar", "/home/me/bar")]
+        );
     }
 
     #[test]
@@ -172,8 +190,14 @@ mod tests {
         let mut s = Store::default();
         s.add(p("here", &here)).unwrap();
         s.add(p("gone", "/definitely/not/a/real/folder")).unwrap();
-        assert_eq!(s.missing(), vec![&p("gone", "/definitely/not/a/real/folder")]);
-        assert_eq!(s.prune_missing(), vec![p("gone", "/definitely/not/a/real/folder")]);
+        assert_eq!(
+            s.missing(),
+            vec![&p("gone", "/definitely/not/a/real/folder")]
+        );
+        assert_eq!(
+            s.prune_missing(),
+            vec![p("gone", "/definitely/not/a/real/folder")]
+        );
         assert_eq!(s.projects, vec![p("here", &here)]);
     }
 }

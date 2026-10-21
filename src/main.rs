@@ -85,7 +85,12 @@ fn show(file: &Path) -> Result<()> {
         println!("No projects yet. Add one with: rattle create <path>");
         return Ok(());
     }
-    let width = store.projects.iter().map(|p| p.name.len()).max().unwrap_or(0);
+    let width = store
+        .projects
+        .iter()
+        .map(|p| p.name.len())
+        .max()
+        .unwrap_or(0);
     for (i, p) in store.projects.iter().enumerate() {
         println!(" {i}. {:<width$}  {}", p.name, p.path);
     }
@@ -112,7 +117,10 @@ fn delete(file: &Path, args: &[String]) -> Result<()> {
         Some(a) => a.clone(),
         None => prompt("Project Name: ")?,
     };
-    if let Some(bad) = args.iter().find(|a| a.starts_with('-') && *a != "--files" && *a != "-f") {
+    if let Some(bad) = args
+        .iter()
+        .find(|a| a.starts_with('-') && *a != "--files" && *a != "-f")
+    {
         return Err(format!("unknown delete option: {bad}").into());
     }
     let mut store = Store::load(file)?;
@@ -126,9 +134,14 @@ fn delete(file: &Path, args: &[String]) -> Result<()> {
     if with_files {
         return delete_with_files(file, store, &name);
     }
-    let removed = store.remove(&name).ok_or_else(|| format!("no project named '{name}'"))?;
+    let removed = store
+        .remove(&name)
+        .ok_or_else(|| format!("no project named '{name}'"))?;
     store.save(file)?;
-    println!("Removed '{}' (files at {} were left untouched)", removed.name, removed.path);
+    println!(
+        "Removed '{}' (files at {} were left untouched)",
+        removed.name, removed.path
+    );
     Ok(())
 }
 
@@ -144,7 +157,10 @@ fn delete_with_files(file: &Path, mut store: Store, name: &str) -> Result<()> {
         )
         .into());
     }
-    let project = store.find(name).cloned().ok_or_else(|| format!("no project named '{name}'"))?;
+    let project = store
+        .find(name)
+        .cloned()
+        .ok_or_else(|| format!("no project named '{name}'"))?;
     let path = ops::deletable_folder(&project, &store, &config, file)?;
     if !io::stdin().is_terminal() {
         return Err("deleting a folder needs an interactive terminal to confirm".into());
@@ -153,7 +169,10 @@ fn delete_with_files(file: &Path, mut store: Store, name: &str) -> Result<()> {
     let confirmed = match config.delete_files {
         DeleteFiles::Trash => confirm(&format!("Move {} to the Trash? [y/N] ", path.display()))?,
         _ => {
-            println!("This permanently deletes {} and everything in it.", path.display());
+            println!(
+                "This permanently deletes {} and everything in it.",
+                path.display()
+            );
             prompt(&format!("Type '{name}' to confirm: "))? == name
         }
     };
@@ -164,7 +183,11 @@ fn delete_with_files(file: &Path, mut store: Store, name: &str) -> Result<()> {
     ops::delete_folder(&path, config.delete_files)?;
     store.remove(name);
     store.save(file)?;
-    let how = if config.delete_files == DeleteFiles::Trash { "moved to the Trash" } else { "deleted" };
+    let how = if config.delete_files == DeleteFiles::Trash {
+        "moved to the Trash"
+    } else {
+        "deleted"
+    };
     println!("Removed '{name}'; {} was {how}", path.display());
     Ok(())
 }
@@ -185,7 +208,9 @@ fn scan(file: &Path, args: &[String]) -> Result<()> {
                     .and_then(|d| d.parse().ok())
                     .ok_or("--depth needs a number, e.g. --depth 2")?;
             }
-            other if other.starts_with('-') => return Err(format!("unknown scan option: {other}").into()),
+            other if other.starts_with('-') => {
+                return Err(format!("unknown scan option: {other}").into())
+            }
             other => roots.push(other.to_string()),
         }
     }
@@ -212,17 +237,29 @@ fn scan(file: &Path, args: &[String]) -> Result<()> {
         store.save(file)?;
     }
     let verb = if dry_run { "Would add" } else { "Added" };
-    println!("{verb} {} project(s), {} already registered", report.added.len(), report.already);
+    println!(
+        "{verb} {} project(s), {} already registered",
+        report.added.len(),
+        report.already
+    );
 
     // Offer, never force, to drop entries whose folder is gone.
     let missing: Vec<String> = store.missing().iter().map(|p| p.name.clone()).collect();
     if !missing.is_empty() {
-        println!("{} registered project(s) no longer exist: {}", missing.len(), missing.join(", "));
+        println!(
+            "{} registered project(s) no longer exist: {}",
+            missing.len(),
+            missing.join(", ")
+        );
         if !dry_run && io::stdin().is_terminal() {
             if confirm("Remove them from Rattle? (folders are already gone) [y/N] ")? {
                 let gone = store.prune_missing();
                 store.save(file)?;
-                println!("Removed {} entr{}", gone.len(), if gone.len() == 1 { "y" } else { "ies" });
+                println!(
+                    "Removed {} entr{}",
+                    gone.len(),
+                    if gone.len() == 1 { "y" } else { "ies" }
+                );
             }
         } else {
             println!("Run `rattle prune` to remove them.");
@@ -261,9 +298,13 @@ fn new_project(file: &Path, args: &[String]) -> Result<()> {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-l" | "--list" => list = true,
-            "-t" | "--template" => template = Some(args.next().ok_or("--template needs a name")?.clone()),
+            "-t" | "--template" => {
+                template = Some(args.next().ok_or("--template needs a name")?.clone())
+            }
             "--in" => parent = Some(args.next().ok_or("--in needs a folder")?.clone()),
-            other if other.starts_with('-') => return Err(format!("unknown new option: {other}").into()),
+            other if other.starts_with('-') => {
+                return Err(format!("unknown new option: {other}").into())
+            }
             other => name = Some(other.to_string()),
         }
     }
@@ -300,7 +341,11 @@ fn new_project(file: &Path, args: &[String]) -> Result<()> {
     let parent = templates::parent_dir(&config, parent.as_deref())?;
 
     let mut store = Store::load(file)?;
-    println!("Creating '{name}' in {} with template '{}'…", parent.display(), template.name);
+    println!(
+        "Creating '{name}' in {} with template '{}'…",
+        parent.display(),
+        template.name
+    );
     let project = templates::create(&mut store, &template, &name, &parent)?;
     store.save(file)?;
     println!("Created and added '{}' -> {}", project.name, project.path);
@@ -328,21 +373,43 @@ fn deps_command(file: &Path, args: &[String]) -> Result<()> {
         }
     };
     let manager = deps::detect(&dir).ok_or_else(|| {
-        format!("no supported manifest in {} (Cargo.toml, package.json, pyproject.toml, go.mod)", dir.display())
+        format!(
+            "no supported manifest in {} (Cargo.toml, package.json, pyproject.toml, go.mod)",
+            dir.display()
+        )
     })?;
 
     let action = rest.first().map(String::as_str).unwrap_or("list");
     let dev = rest.iter().any(|a| a == "--dev" || a == "-D");
-    let packages: Vec<String> = rest.iter().skip(1).filter(|a| !a.starts_with('-')).cloned().collect();
+    let packages: Vec<String> = rest
+        .iter()
+        .skip(1)
+        .filter(|a| !a.starts_with('-'))
+        .cloned()
+        .collect();
     match action {
         "list" => {
             let deps = deps::list(&dir, manager)?;
-            let noun = if deps.len() == 1 { "dependency" } else { "dependencies" };
-            println!("{} · {} ({}) · {} {noun}", dir.display(), manager.name(), manager.manifest(), deps.len());
+            let noun = if deps.len() == 1 {
+                "dependency"
+            } else {
+                "dependencies"
+            };
+            println!(
+                "{} · {} ({}) · {} {noun}",
+                dir.display(),
+                manager.name(),
+                manager.manifest(),
+                deps.len()
+            );
             let width = deps.iter().map(|d| d.name.len()).max().unwrap_or(0);
             for d in deps {
                 let group = d.group.label();
-                let group = if group.is_empty() { String::new() } else { format!("  [{group}]") };
+                let group = if group.is_empty() {
+                    String::new()
+                } else {
+                    format!("  [{group}]")
+                };
                 println!(" {:<width$}  {}{group}", d.name, d.spec);
             }
             return Ok(());
@@ -357,8 +424,15 @@ fn deps_command(file: &Path, args: &[String]) -> Result<()> {
             let listed = deps::list(&dir, manager).unwrap_or_default();
             for name in &packages {
                 // Remove from the group it is listed in (dev, build, optional, …).
-                let group = listed.iter().find(|d| d.name == *name).map(|d| d.group.clone());
-                let group = group.unwrap_or(if dev { deps::Group::Dev } else { deps::Group::Normal });
+                let group = listed
+                    .iter()
+                    .find(|d| d.name == *name)
+                    .map(|d| d.group.clone());
+                let group = group.unwrap_or(if dev {
+                    deps::Group::Dev
+                } else {
+                    deps::Group::Normal
+                });
                 run_visible(deps::remove_command(manager, &dir, name, &group))?;
             }
         }
@@ -370,7 +444,9 @@ fn deps_command(file: &Path, args: &[String]) -> Result<()> {
 fn run_visible(mut cmd: std::process::Command) -> Result<()> {
     println!("$ {}", deps::describe(&cmd));
     let program = cmd.get_program().to_string_lossy().into_owned();
-    let status = cmd.status().map_err(|e| format!("could not run {program}: {e}"))?;
+    let status = cmd
+        .status()
+        .map_err(|e| format!("could not run {program}: {e}"))?;
     if !status.success() {
         return Err(format!("{program} exited with {status}").into());
     }
@@ -391,12 +467,16 @@ fn edit_config(file: &Path, arg: Option<&str>) -> Result<()> {
             let dir = config_file.parent().unwrap_or(Path::new("."));
             let (mut cmd, editor) =
                 ops::editor_command(config.editor.as_deref(), dir, &config_file, true);
-            let status = cmd.status().map_err(|e| format!("could not run '{editor}': {e}"))?;
+            let status = cmd
+                .status()
+                .map_err(|e| format!("could not run '{editor}': {e}"))?;
             if !status.success() {
                 return Err(format!("'{editor}' exited with {status}").into());
             }
         }
-        Some(other) => return Err(format!("unknown config option: {other} (try: rattle config path)").into()),
+        Some(other) => {
+            return Err(format!("unknown config option: {other} (try: rattle config path)").into())
+        }
     }
     Ok(())
 }

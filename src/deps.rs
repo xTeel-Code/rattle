@@ -61,7 +61,8 @@ pub fn detect(dir: &Path) -> Option<Manager> {
         })
     } else if has("pyproject.toml") {
         let poetry = has("poetry.lock")
-            || std::fs::read_to_string(dir.join("pyproject.toml")).is_ok_and(|t| t.contains("[tool.poetry"));
+            || std::fs::read_to_string(dir.join("pyproject.toml"))
+                .is_ok_and(|t| t.contains("[tool.poetry"));
         Some(if poetry { Manager::Poetry } else { Manager::Uv })
     } else if has("go.mod") {
         Some(Manager::Go)
@@ -105,7 +106,8 @@ pub struct Dep {
 
 pub fn list(dir: &Path, manager: Manager) -> Result<Vec<Dep>, String> {
     let path = dir.join(manager.manifest());
-    let text = std::fs::read_to_string(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
     Ok(match manager {
         Manager::Cargo => parse_cargo(&text),
         Manager::Npm | Manager::Pnpm | Manager::Yarn | Manager::Bun => parse_package_json(&text)?,
@@ -194,17 +196,28 @@ pub fn describe(cmd: &Command) -> String {
 /// or the last error line on failure.
 pub fn run_captured(mut cmd: Command) -> Result<String, String> {
     let program = cmd.get_program().to_string_lossy().into_owned();
-    let output = cmd.stdin(Stdio::null()).output().map_err(|e| match e.kind() {
-        std::io::ErrorKind::NotFound => format!("{program} is not installed (or not on PATH)"),
-        _ => format!("could not run {program}: {e}"),
-    })?;
+    let output = cmd
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => format!("{program} is not installed (or not on PATH)"),
+            _ => format!("could not run {program}: {e}"),
+        })?;
     let last_line = |bytes: &[u8]| {
-        String::from_utf8_lossy(bytes).lines().rev().find(|l| !l.trim().is_empty()).map(|l| l.trim().to_string())
+        String::from_utf8_lossy(bytes)
+            .lines()
+            .rev()
+            .find(|l| !l.trim().is_empty())
+            .map(|l| l.trim().to_string())
     };
     if output.status.success() {
-        Ok(last_line(&output.stderr).or_else(|| last_line(&output.stdout)).unwrap_or_else(|| "done".into()))
+        Ok(last_line(&output.stderr)
+            .or_else(|| last_line(&output.stdout))
+            .unwrap_or_else(|| "done".into()))
     } else {
-        let reason = last_line(&output.stderr).or_else(|| last_line(&output.stdout)).unwrap_or_default();
+        let reason = last_line(&output.stderr)
+            .or_else(|| last_line(&output.stdout))
+            .unwrap_or_default();
         Err(format!("{program} failed ({}): {reason}", output.status))
     }
 }
@@ -233,21 +246,32 @@ fn parse_cargo(text: &str) -> Vec<Dep> {
             section = None;
             if let Some(g) = group_of(header) {
                 section = Some(g);
-            } else if let Some((kind, name)) = header.split_once('.').filter(|(k, _)| group_of(k).is_some()) {
+            } else if let Some((kind, name)) = header
+                .split_once('.')
+                .filter(|(k, _)| group_of(k).is_some())
+            {
                 table = Some((unquote(name), group_of(kind).unwrap(), "*".into()));
-            } else if header.starts_with("target.") && group_of(header.rsplit('.').next().unwrap_or("")).is_some() {
+            } else if header.starts_with("target.")
+                && group_of(header.rsplit('.').next().unwrap_or("")).is_some()
+            {
                 section = Some(Group::Other("target".into()));
             }
             continue;
         }
-        let Some((key, value)) = line.split_once('=') else { continue };
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
         let (key, value) = (unquote(key.trim()), value.trim());
         if let Some((_, _, spec)) = &mut table {
             if key == "version" {
                 *spec = unquote(value);
             }
         } else if let Some(group) = &section {
-            deps.push(Dep { name: key, spec: cargo_spec(value), group: group.clone() });
+            deps.push(Dep {
+                name: key,
+                spec: cargo_spec(value),
+                group: group.clone(),
+            });
         }
     }
     flush(&mut table, &mut deps);
@@ -261,7 +285,11 @@ fn cargo_spec(value: &str) -> String {
     }
     let field = |name: &str| {
         let rest = &value[value.find(name)? + name.len()..];
-        let rest = rest.trim_start().strip_prefix('=')?.trim_start().strip_prefix('"')?;
+        let rest = rest
+            .trim_start()
+            .strip_prefix('=')?
+            .trim_start()
+            .strip_prefix('"')?;
         Some(rest[..rest.find('"')?].to_string())
     };
     field("version")
@@ -272,7 +300,8 @@ fn cargo_spec(value: &str) -> String {
 }
 
 fn parse_package_json(text: &str) -> Result<Vec<Dep>, String> {
-    let json: serde_json::Value = serde_json::from_str(text).map_err(|e| format!("invalid package.json: {e}"))?;
+    let json: serde_json::Value =
+        serde_json::from_str(text).map_err(|e| format!("invalid package.json: {e}"))?;
     let sections = [
         ("dependencies", Group::Normal),
         ("devDependencies", Group::Dev),
@@ -284,7 +313,11 @@ fn parse_package_json(text: &str) -> Result<Vec<Dep>, String> {
         if let Some(map) = json.get(field).and_then(|v| v.as_object()) {
             for (name, spec) in map {
                 let spec = spec.as_str().unwrap_or("*").to_string();
-                deps.push(Dep { name: name.clone(), spec, group: group.clone() });
+                deps.push(Dep {
+                    name: name.clone(),
+                    spec,
+                    group: group.clone(),
+                });
             }
         }
     }
@@ -303,7 +336,9 @@ fn parse_pyproject(text: &str) -> Vec<Dep> {
             table = header.trim().to_string();
             continue;
         }
-        let Some((key, value)) = line.split_once('=') else { continue };
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
         let (key, value) = (unquote(key.trim()), value.trim());
 
         // PEP 621 / PEP 735: arrays of requirement strings.
@@ -317,7 +352,11 @@ fn parse_pyproject(text: &str) -> Vec<Dep> {
         if let Some(group) = array_group {
             for req in take_string_array(value, &lines, &mut i) {
                 let (name, spec) = split_requirement(&req);
-                deps.push(Dep { name, spec, group: group.clone() });
+                deps.push(Dep {
+                    name,
+                    spec,
+                    group: group.clone(),
+                });
             }
             continue;
         }
@@ -329,11 +368,21 @@ fn parse_pyproject(text: &str) -> Vec<Dep> {
             t => t
                 .strip_prefix("tool.poetry.group.")
                 .and_then(|t| t.strip_suffix(".dependencies"))
-                .map(|g| if g == "dev" { Group::Dev } else { Group::Named(g.to_string()) }),
+                .map(|g| {
+                    if g == "dev" {
+                        Group::Dev
+                    } else {
+                        Group::Named(g.to_string())
+                    }
+                }),
         };
         if let Some(group) = poetry_group {
             if key != "python" {
-                deps.push(Dep { name: key, spec: cargo_spec(value), group });
+                deps.push(Dep {
+                    name: key,
+                    spec: cargo_spec(value),
+                    group,
+                });
             }
         }
     }
@@ -378,7 +427,9 @@ fn take_string_array(first: &str, lines: &[&str], i: &mut usize) -> Vec<String> 
 /// `requests[socks]>=2.31; python_version < "3.13"` → (`requests`, `[socks]>=2.31; …`).
 fn split_requirement(req: &str) -> (String, String) {
     let req = req.trim();
-    let end = req.find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))).unwrap_or(req.len());
+    let end = req
+        .find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')))
+        .unwrap_or(req.len());
     (req[..end].to_string(), req[end..].trim().to_string())
 }
 
@@ -409,8 +460,16 @@ fn parse_go_mod(text: &str) -> Vec<Dep> {
         };
         let mut parts = entry.split_whitespace();
         if let (Some(name), Some(version)) = (parts.next(), parts.next()) {
-            let group = if indirect { Group::Other("indirect".into()) } else { Group::Normal };
-            deps.push(Dep { name: name.into(), spec: version.into(), group });
+            let group = if indirect {
+                Group::Other("indirect".into())
+            } else {
+                Group::Normal
+            };
+            deps.push(Dep {
+                name: name.into(),
+                spec: version.into(),
+                group,
+            });
         }
     }
     deps
@@ -421,7 +480,11 @@ mod tests {
     use super::*;
 
     fn dep(name: &str, spec: &str, group: Group) -> Dep {
-        Dep { name: name.into(), spec: spec.into(), group }
+        Dep {
+            name: name.into(),
+            spec: spec.into(),
+            group,
+        }
     }
 
     #[test]
@@ -450,7 +513,13 @@ mod tests {
             r#"{"name":"x","dependencies":{"react":"^18.3.1"},"devDependencies":{"vite":"^5.4.0"}}"#,
         )
         .unwrap();
-        assert_eq!(deps, vec![dep("react", "^18.3.1", Group::Normal), dep("vite", "^5.4.0", Group::Dev)]);
+        assert_eq!(
+            deps,
+            vec![
+                dep("react", "^18.3.1", Group::Normal),
+                dep("vite", "^5.4.0", Group::Dev)
+            ]
+        );
         assert!(parse_package_json("{ not json").is_err());
     }
 
@@ -475,7 +544,13 @@ mod tests {
             "[tool.poetry.dependencies]\npython = \"^3.12\"\nhttpx = \"^0.27\"\n\n\
              [tool.poetry.group.dev.dependencies]\npytest = { version = \"^8.0\" }\n",
         );
-        assert_eq!(poetry, vec![dep("httpx", "^0.27", Group::Normal), dep("pytest", "^8.0", Group::Dev)]);
+        assert_eq!(
+            poetry,
+            vec![
+                dep("httpx", "^0.27", Group::Normal),
+                dep("pytest", "^8.0", Group::Dev)
+            ]
+        );
     }
 
     #[test]
@@ -489,7 +564,11 @@ mod tests {
             vec![
                 dep("github.com/spf13/cobra", "v1.8.1", Group::Normal),
                 dep("golang.org/x/sync", "v0.8.0", Group::Normal),
-                dep("github.com/inconshreveable/mousetrap", "v1.1.0", Group::Other("indirect".into())),
+                dep(
+                    "github.com/inconshreveable/mousetrap",
+                    "v1.1.0",
+                    Group::Other("indirect".into())
+                ),
             ]
         );
     }
@@ -498,15 +577,38 @@ mod tests {
     fn builds_add_and_remove_commands() {
         let d = Path::new(".");
         let pkgs = vec!["serde".to_string()];
-        assert_eq!(describe(&add_command(Manager::Cargo, d, &pkgs, true)), "cargo add --dev serde");
-        assert_eq!(describe(&add_command(Manager::Npm, d, &pkgs, true)), "npm install --save-dev serde");
-        assert_eq!(describe(&add_command(Manager::Poetry, d, &pkgs, true)), "poetry add --group dev serde");
-        assert_eq!(describe(&add_command(Manager::Go, d, &pkgs, true)), "go get serde");
-        assert_eq!(describe(&remove_command(Manager::Cargo, d, "x", &Group::Build)), "cargo remove x --build");
         assert_eq!(
-            describe(&remove_command(Manager::Uv, d, "x", &Group::Optional("fast".into()))),
+            describe(&add_command(Manager::Cargo, d, &pkgs, true)),
+            "cargo add --dev serde"
+        );
+        assert_eq!(
+            describe(&add_command(Manager::Npm, d, &pkgs, true)),
+            "npm install --save-dev serde"
+        );
+        assert_eq!(
+            describe(&add_command(Manager::Poetry, d, &pkgs, true)),
+            "poetry add --group dev serde"
+        );
+        assert_eq!(
+            describe(&add_command(Manager::Go, d, &pkgs, true)),
+            "go get serde"
+        );
+        assert_eq!(
+            describe(&remove_command(Manager::Cargo, d, "x", &Group::Build)),
+            "cargo remove x --build"
+        );
+        assert_eq!(
+            describe(&remove_command(
+                Manager::Uv,
+                d,
+                "x",
+                &Group::Optional("fast".into())
+            )),
             "uv remove x --optional fast"
         );
-        assert_eq!(describe(&remove_command(Manager::Go, d, "a/b", &Group::Normal)), "go get a/b@none");
+        assert_eq!(
+            describe(&remove_command(Manager::Go, d, "a/b", &Group::Normal)),
+            "go get a/b@none"
+        );
     }
 }

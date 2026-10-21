@@ -181,10 +181,13 @@ impl Config {
                     (key, acc)
                 }
                 None => match line.split_once('=') {
-                    Some((k, v)) if table.is_empty() => (k.trim().to_string(), v.trim().to_string()),
+                    Some((k, v)) if table.is_empty() => {
+                        (k.trim().to_string(), v.trim().to_string())
+                    }
                     Some((k, v)) => (format!("{table}.{}", k.trim()), v.trim().to_string()),
                     None => {
-                        if let Some(name) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+                        if let Some(name) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']'))
+                        {
                             table = name.trim().to_string();
                         }
                         continue;
@@ -262,7 +265,9 @@ pub fn set_values(text: &str, updates: &[(&str, String)]) -> String {
                 let header = first_table_header(&lines).unwrap_or(lines.len());
                 let example = lines[..header].iter().position(|l| {
                     l.trim_start().strip_prefix('#').is_some_and(|rest| {
-                        rest.trim_start().strip_prefix(key).is_some_and(|r| r.trim_start().starts_with('='))
+                        rest.trim_start()
+                            .strip_prefix(key)
+                            .is_some_and(|r| r.trim_start().starts_with('='))
                     })
                 });
                 lines.insert(example.map_or(header, |i| i + 1), new_line);
@@ -286,7 +291,9 @@ fn find_top_level_key(lines: &[String], key: &str) -> Option<(usize, usize)> {
         if is_table_header(line) {
             return None;
         }
-        let Some((k, v)) = line.split_once('=') else { continue };
+        let Some((k, v)) = line.split_once('=') else {
+            continue;
+        };
         let balance = bracket_balance(v);
         if unquote(k.trim()) == *key {
             // Extend over the rest of a multi-line array.
@@ -402,7 +409,10 @@ mod tests {
     #[test]
     fn parses_scalars_and_ignores_bad_values() {
         let c = Config::parse("max_depth = 5\nauto_scan = false\nignore = [\"tmp\"]\n");
-        assert_eq!((c.max_depth, c.auto_scan, c.ignore), (5, false, vec!["tmp".to_string()]));
+        assert_eq!(
+            (c.max_depth, c.auto_scan, c.ignore),
+            (5, false, vec!["tmp".to_string()])
+        );
 
         let c = Config::parse("max_depth = deep\nauto_scan = maybe\n");
         assert_eq!((c.max_depth, c.auto_scan), (DEFAULT_MAX_DEPTH, true));
@@ -410,7 +420,10 @@ mod tests {
 
     #[test]
     fn parses_editor() {
-        assert_eq!(Config::parse("editor = \"code -w\"\n").editor.as_deref(), Some("code -w"));
+        assert_eq!(
+            Config::parse("editor = \"code -w\"\n").editor.as_deref(),
+            Some("code -w")
+        );
         assert_eq!(Config::parse("editor = \"\"\n").editor, None);
         assert_eq!(Config::parse("# editor = \"hx\"\n").editor, None);
     }
@@ -434,7 +447,10 @@ mod tests {
         assert_eq!(
             c.templates,
             vec![
-                ("rust".to_string(), "cargo new --vcs none {name}".to_string()),
+                (
+                    "rust".to_string(),
+                    "cargo new --vcs none {name}".to_string()
+                ),
                 ("web".to_string(), "pnpm create vite {name}".to_string()),
             ]
         );
@@ -458,8 +474,14 @@ mod tests {
              editor = \"zed\"\n[templates]\nweb = \"x {name}\"\n"
         );
         let c = Config::parse(&out);
-        assert_eq!((c.scan_dirs, c.max_depth, c.editor.as_deref()), (vec!["~/code".to_string()], 5, Some("zed")));
-        assert_eq!(c.templates, vec![("web".to_string(), "x {name}".to_string())]);
+        assert_eq!(
+            (c.scan_dirs, c.max_depth, c.editor.as_deref()),
+            (vec!["~/code".to_string()], 5, Some("zed"))
+        );
+        assert_eq!(
+            c.templates,
+            vec![("web".to_string(), "x {name}".to_string())]
+        );
     }
 
     #[test]
@@ -473,9 +495,18 @@ mod tests {
 
     #[test]
     fn set_values_appends_when_missing_and_ignores_table_keys() {
-        let out = set_values("[templates]\nauto_scan = \"not top level\"\n", &[("auto_scan", "false".into())]);
-        assert_eq!(out, "auto_scan = false\n[templates]\nauto_scan = \"not top level\"\n");
-        assert_eq!(set_values("", &[("max_depth", "2".into())]), "max_depth = 2\n");
+        let out = set_values(
+            "[templates]\nauto_scan = \"not top level\"\n",
+            &[("auto_scan", "false".into())],
+        );
+        assert_eq!(
+            out,
+            "auto_scan = false\n[templates]\nauto_scan = \"not top level\"\n"
+        );
+        assert_eq!(
+            set_values("", &[("max_depth", "2".into())]),
+            "max_depth = 2\n"
+        );
     }
 
     #[test]
