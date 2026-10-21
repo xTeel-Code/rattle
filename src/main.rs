@@ -1,21 +1,32 @@
+mod config;
+mod ops;
 mod store;
+mod tui;
 
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use store::{Project, Store};
+use config::Config;
+use store::Store;
 
 const HELP: &str = "\
 Rattle - Project Manager Written In Rust
 Usage: rattle [command] [projectName | filePath]
+(no command)\t- opens the interactive TUI
+tui\t- opens the interactive TUI
 help\t- shows this message
 show\t- will show your projects
 create\t- will register a project in folder of your choosing (req. filePath)
 delete\t- will delete project of your choosing (req. projectName)
+scan\t- will register every project found in your scan folders
+\t  rattle scan [-n | --dry-run] [folder...]
+\t  (folders default to scan_dirs in ~/.rattle/config.toml)
 
+In the TUI, Enter prints the selected path on exit, so `cd \"$(rattle)\"` works.
 Arguments that are omitted are asked for interactively.
-Registry: ~/.rattle/projects.toml (override with RATTLE_FILE)";
+Registry: ~/.rattle/projects.toml (override with RATTLE_FILE)
+Config:   config.toml next to the registry";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -27,6 +38,10 @@ fn main() -> ExitCode {
         Some("show") | Some("list") | Some("ls") => show(&file),
         Some("create") | Some("add") => create(&file, args.get(1)),
         Some("delete") | Some("remove") | Some("rm") => delete(&file, args.get(1)),
+        Some("scan") => scan(&file, &args[1..]),
+        Some("tui") => tui::run(&file),
+        // The TUI draws on stderr, so stdout may be captured by `$(rattle)`.
+        None if io::stdin().is_terminal() && io::stderr().is_terminal() => tui::run(&file),
         Some("help") | Some("-h") | Some("--help") | None => {
             println!("{HELP}");
             Ok(())
@@ -67,23 +82,12 @@ fn create(file: &Path, arg: Option<&String>) -> Result<()> {
         Some(a) => a.clone(),
         None => prompt("Write a Path: ")?,
     };
-    if raw.is_empty() {
-        return Err("no path given".into());
-    }
-    let path = std::fs::canonicalize(expand_tilde(&raw))
-        .map_err(|e| format!("cannot access '{raw}': {e}"))?;
-    if !path.is_dir() {
-        return Err(format!("'{}' is not a directory", path.display()).into());
-    }
-    let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .ok_or("cannot derive a project name from that path")?;
-
+    let project = ops::resolve_project(&raw)?;
     let mut store = Store::load(file)?;
-    store.add(Project { name: name.clone(), path: path.to_string_lossy().into_owned() })?;
+    let msg = format!("Added '{}' -> {}", project.name, project.path);
+    store.add(project)?;
     store.save(file)?;
-    println!("Added '{name}' -> {}", path.display());
+    println!("{msg}");
     Ok(())
 }
 
@@ -106,19 +110,43 @@ fn delete(file: &Path, arg: Option<&String>) -> Result<()> {
     Ok(())
 }
 
+fn scan(file: &Path, args: &[String]) -> Result<()> {
+    let dry_run = args.iter().any(|a| a == "-n" || a == "--dry-run");
+    let config_file = file.with_file_name("config.toml");
+    let config = Config::load(&config_file)?;
+
+    let mut roots: Vec<String> = args.iter().filter(|a| !a.starts_with('-')).cloned().collect();
+    if roots.is_empty() {
+        roots = config.scan_dirs.clone();
+    }
+    if roots.is_empty() {
+        return Err(format!(
+            "nothing to scan; pass a folder (rattle scan ~/code) or set scan_dirs in {}",
+            config_file.display()
+        )
+        .into());
+    }
+
+    let mut store = Store::load(file)?;
+    let report = ops::scan_roots(&mut store, &roots, &config.markers);
+    for w in &report.warnings {
+        eprintln!("warning: {w}");
+    }
+    for p in &report.added {
+        println!(" + {}  {}", p.name, p.path);
+    }
+    if !report.added.is_empty() && !dry_run {
+        store.save(file)?;
+    }
+    let verb = if dry_run { "Would add" } else { "Added" };
+    println!("{verb} {} project(s), {} already registered", report.added.len(), report.already);
+    Ok(())
+}
+
 fn prompt(msg: &str) -> io::Result<String> {
     print!("{msg}");
     io::stdout().flush()?;
     let mut line = String::new();
     io::stdin().lock().read_line(&mut line)?;
     Ok(line.trim().to_string())
-}
-
-fn expand_tilde(p: &str) -> PathBuf {
-    match p.strip_prefix("~") {
-        Some(rest) if rest.is_empty() || rest.starts_with('/') => {
-            store::home_dir().join(rest.trim_start_matches('/'))
-        }
-        _ => PathBuf::from(p),
-    }
 }

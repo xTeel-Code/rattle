@@ -113,7 +113,7 @@ fn quote(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
-fn unquote(s: &str) -> String {
+pub(crate) fn unquote(s: &str) -> String {
     match s.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
         Some(inner) => inner.replace("\\\"", "\"").replace("\\\\", "\\"),
         None => s.to_string(),
