@@ -7,3 +7,4 @@ authors = ["xTeel-Code <119667246+xTeel-Code@users.noreply.github.com>"]
 readme = "README.md"
 
 [dependencies]
+ratatui = "0.30.2"

@@ -7,7 +7,29 @@ just to see your projects in one app with no looking for specific folder
 cargo install --path .
 ```
 
-## Usage
+## TUI
+Run `rattle` with no arguments (or `rattle tui`) to open the interactive browser:
+
+| Key | Action |
+| --- | --- |
+| `↑`/`↓`, `j`/`k`, `g`/`G` | move |
+| `Enter` | quit and print the selected path |
+| `/` | filter by name or path (`Esc` clears) |
+| `a` | add a project folder |
+| `d` | delete the entry (files on disk are kept) |
+| `s` | scan the `scan_dirs` from `config.toml` |
+| `e` | open the project in `$VISUAL` / `$EDITOR` |
+| `?` | key help |
+| `q` / `Esc` | quit |
+
+The TUI draws on stderr, so you can jump straight into a project:
+```sh
+cd "$(rattle)"
+# or as a shell function:  rcd() { local d; d="$(rattle)" && [ -n "$d" ] && cd "$d"; }
+```
+Projects whose folder no longer exists are marked `missing`.
+
+## Commands
 ```
 rattle [command] [projectName | filePath]
 help    - shows help
