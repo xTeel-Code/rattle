@@ -20,8 +20,8 @@ show\t- will show your projects
 create\t- will register a project in folder of your choosing (req. filePath)
 delete\t- will delete project of your choosing (req. projectName)
 scan\t- will register every project found in your scan folders
-\t  rattle scan [-n | --dry-run] [folder...]
-\t  (folders default to scan_dirs in ~/.rattle/config.toml)
+\t  rattle scan [-n | --dry-run] [-d | --depth N] [folder...]
+\t  (folders default to scan_dirs, depth to max_depth in ~/.rattle/config.toml)
 
 In the TUI, Enter prints the selected path on exit, so `cd \"$(rattle)\"` works.
 Arguments that are omitted are asked for interactively.
@@ -111,11 +111,25 @@ fn delete(file: &Path, arg: Option<&String>) -> Result<()> {
 }
 
 fn scan(file: &Path, args: &[String]) -> Result<()> {
-    let dry_run = args.iter().any(|a| a == "-n" || a == "--dry-run");
     let config_file = file.with_file_name("config.toml");
-    let config = Config::load(&config_file)?;
+    let mut config = Config::load(&config_file)?;
 
-    let mut roots: Vec<String> = args.iter().filter(|a| !a.starts_with('-')).cloned().collect();
+    let mut dry_run = false;
+    let mut roots = Vec::new();
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "-n" | "--dry-run" => dry_run = true,
+            "-d" | "--depth" => {
+                config.max_depth = args
+                    .next()
+                    .and_then(|d| d.parse().ok())
+                    .ok_or("--depth needs a number, e.g. --depth 2")?;
+            }
+            other if other.starts_with('-') => return Err(format!("unknown scan option: {other}").into()),
+            other => roots.push(other.to_string()),
+        }
+    }
     if roots.is_empty() {
         roots = config.scan_dirs.clone();
     }
@@ -128,7 +142,7 @@ fn scan(file: &Path, args: &[String]) -> Result<()> {
     }
 
     let mut store = Store::load(file)?;
-    let report = ops::scan_roots(&mut store, &roots, &config.markers);
+    let report = ops::scan_roots(&mut store, &roots, &config);
     for w in &report.warnings {
         eprintln!("warning: {w}");
     }

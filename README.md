@@ -37,7 +37,7 @@ show    - lists your projects               (aliases: list, ls)
 create  - registers a project folder        (aliases: add)      e.g. rattle create ~/code/foo
 delete  - removes a project entry by name   (aliases: remove, rm) or by its number from `show`
 scan    - registers every project found in your scan folders
-          rattle scan [-n | --dry-run] [folder...]
+          rattle scan [-n | --dry-run] [-d | --depth N] [folder...]
 ```
 Omitted arguments are asked for interactively.
 
@@ -45,17 +45,33 @@ Projects are stored in `~/.rattle/projects.toml` (override with `RATTLE_FILE`).
 Files written by the old Python version are read without changes.
 
 ## Scanning
-`rattle scan` looks at the direct subfolders of each scan folder and registers
-those that contain a project marker (`.git`, `Cargo.toml`, `pyproject.toml`,
-`package.json`, `go.mod`, `pom.xml`, `build.gradle`, `CMakeLists.txt`, `Makefile`).
-Hidden folders, already registered paths and name clashes are skipped.
+`rattle scan` searches each scan folder up to `max_depth` levels deep (default 3)
+and registers every folder that contains a project marker (`.git`, `Cargo.toml`,
+`pyproject.toml`, `package.json`, `go.mod`, `pom.xml`, `build.gradle`,
+`CMakeLists.txt`, `Makefile`).
+
+- It stops at a project: subfolders inside a project are never registered separately.
+- Hidden folders and folders like `node_modules`, `target`, `venv`, `build`,
+  `dist`, `vendor` are never searched.
+- Already registered paths and name clashes are skipped, so rescanning is safe.
+
+So with `scan_dirs = ["~/code"]`, all of these are found:
+```
+~/code/rattle                     (depth 1)
+~/code/work/api                   (depth 2)
+~/code/github/xTeel-Code/rattle   (depth 3)
+```
 
 Folders passed on the command line are scanned once; without them, the
-folders from `~/.rattle/config.toml` are used (created on first run):
+folders from `~/.rattle/config.toml` are used (created on first run).
+The TUI rescans them automatically every time it opens:
 ```toml
 scan_dirs = ["~/code", "~/work"]
-# optional, replaces the default markers
+max_depth = 3          # rattle scan --depth N overrides it
+auto_scan = true       # rescan when the TUI opens
+# optional, replace the defaults
 markers = [".git", "Cargo.toml"]
+ignore = ["node_modules", "target"]
 ```
 
 ## Roadmap
