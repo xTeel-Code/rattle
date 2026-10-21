@@ -1,0 +1,9 @@
+[package]
+name = "rattle"
+version = "0.2.0"
+edition = "2021"
+description = "Project manager: see all your projects in one place without hunting for folders"
+authors = ["xTeel-Code <119667246+xTeel-Code@users.noreply.github.com>"]
+readme = "README.md"
+
+[dependencies]
