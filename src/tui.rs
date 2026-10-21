@@ -5,6 +5,7 @@
 
 use std::io::{self, Stderr};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -37,6 +38,11 @@ const KEYS: &[(&str, &str)] = &[
     ("?", "toggle this help"),
     ("q / Esc", "quit"),
 ];
+
+/// Enter presses this soon after the TUI opens are leftovers from launching it.
+const STARTUP_ENTER_GUARD: Duration = Duration::from_millis(500);
+/// Each ignored Enter extends the guard by this much, covering key repeat.
+const ENTER_REPEAT_GAP: Duration = Duration::from_millis(250);
 
 enum Mode {
     Normal,
@@ -104,12 +110,25 @@ fn restore() -> io::Result<()> {
 
 impl App {
     fn event_loop(&mut self, term: &mut Term) -> Result<()> {
+        // The Enter that launched rattle can reach the TUI too (key repeat while
+        // it is still held, or typed twice). Enter picks a project and quits, so
+        // the TUI would vanish before it was seen. Ignore Enter right after
+        // start, and keep ignoring it for as long as it keeps repeating.
+        let mut enter_guard = Instant::now() + STARTUP_ENTER_GUARD;
         while !self.quit {
             term.draw(|f| self.draw(f))?;
             if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
-                    self.on_key(key, term)?;
+                if key.kind != KeyEventKind::Press {
+                    continue;
                 }
+                if key.code == KeyCode::Enter
+                    && matches!(self.mode, Mode::Normal)
+                    && Instant::now() < enter_guard
+                {
+                    enter_guard = Instant::now() + ENTER_REPEAT_GAP;
+                    continue;
+                }
+                self.on_key(key, term)?;
             }
         }
         Ok(())
