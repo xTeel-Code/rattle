@@ -471,11 +471,22 @@ fn tui_envs_tab_removes_an_environment_after_typing_its_name() {
         "{config}"
     );
 
-    // Back in Projects, work's projects no longer have a tag.
+    // Back in Projects, work's projects no longer have a tag. Poll: a capture
+    // can land on a half-painted frame still showing the old row.
     tui.keys(&["Tab"]);
-    let screen = tui.wait_for("Projects (");
-    let api = screen.lines().find(|l| l.contains(" api ")).unwrap();
-    assert!(!api.contains("[work"), "{api}");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let screen = tui.screen();
+        let api = screen.lines().find(|l| l.contains(" api "));
+        if api.is_some_and(|l| !l.contains("[work")) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "api still tagged:\n{screen}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
 }
 
 #[test]
