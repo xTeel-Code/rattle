@@ -123,6 +123,7 @@ case ":$PATH:" in
         ;;
     *)
         say "$BIN_DIR is not on your PATH yet; add it to your shell profile:"
+        # shellcheck disable=SC2016 # $PATH is meant literally: it's a line to paste.
         printf '    echo '\''export PATH="%s:$PATH"'\'' >> ~/.zshrc   # or ~/.bashrc\n' "$BIN_DIR"
         ;;
 esac
