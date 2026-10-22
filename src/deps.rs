@@ -259,11 +259,28 @@ fn parse_cargo(text: &str) -> Vec<Dep> {
                 *spec = unquote(value);
             }
         } else if let Some(group) = &section {
-            deps.push(Dep {
-                name: key,
-                spec: cargo_spec(value),
-                group: group.clone(),
-            });
+            // Dotted keys (`serde.workspace = true`, `serde.version = "1"`) are
+            // fields of dependency `serde`, not dependencies of their own.
+            let (name, field) = match key.split_once('.') {
+                Some((name, field)) => (unquote(name), Some(field)),
+                None => (key.clone(), None),
+            };
+            let spec = match field {
+                None => cargo_spec(value),
+                Some("version") => unquote(value),
+                Some("workspace") => "workspace".into(),
+                Some(_) => "*".into(),
+            };
+            match deps.iter_mut().find(|d| d.name == name && d.group == *group) {
+                // A later field refines the spec only if it says something.
+                Some(dep) if spec != "*" => dep.spec = spec,
+                Some(_) => {}
+                None => deps.push(Dep {
+                    name,
+                    spec,
+                    group: group.clone(),
+                }),
+            }
         }
     }
     flush(&mut table, &mut deps);
@@ -496,6 +513,27 @@ mod tests {
                 dep("tokio", "1.40", Group::Normal),
                 dep("libc", "0.2", Group::Other("target".into())),
             ]
+        );
+    }
+
+    #[test]
+    fn parses_dotted_cargo_keys_as_one_dependency() {
+        let deps = parse_cargo(
+            "[dependencies]\nserde.workspace = true\nregex.version = \"1.10\"\nregex.features = [\"std\"]\n\
+             [dev-dependencies]\nserde.workspace = true\n",
+        );
+        assert_eq!(
+            deps,
+            vec![
+                dep("serde", "workspace", Group::Normal),
+                dep("regex", "1.10", Group::Normal),
+                dep("serde", "workspace", Group::Dev),
+            ]
+        );
+        // Removing uses the real name, not "serde.workspace".
+        assert_eq!(
+            describe(&remove_command(Manager::Cargo, Path::new("."), &deps[0].name, &deps[0].group)),
+            "cargo remove serde"
         );
     }
 

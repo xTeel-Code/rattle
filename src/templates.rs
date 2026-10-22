@@ -123,11 +123,12 @@ pub fn prepare(
         return Err(format!("{} already exists", target.display()));
     }
 
-    // validate_name() keeps the name shell-safe; quote it anyway.
+    // validate_name() allows only [A-Za-z0-9._-], so the bare name is shell-safe
+    // and works whether or not the template quotes {name} itself.
     let mut command = Command::new("sh");
     command
         .arg("-c")
-        .arg(template.command.replace("{name}", &format!("'{name}'")))
+        .arg(template.command.replace("{name}", name))
         .current_dir(parent)
         .stdin(Stdio::null());
     Ok(Prepared {
@@ -235,6 +236,14 @@ mod tests {
         assert_eq!(p.name, "demo");
         assert!(parent.join("demo/README").exists());
         assert_eq!(store.projects.len(), 1);
+
+        // Templates that quote {name} themselves get a correctly named folder.
+        let quoted = Template {
+            name: "q".into(),
+            command: "mkdir \"{name}\"".into(),
+        };
+        create(&mut store, &quoted, "quoted-app", &parent).unwrap();
+        assert!(parent.join("quoted-app").is_dir());
 
         assert!(create(&mut store, &make, "demo", &parent)
             .unwrap_err()
