@@ -271,7 +271,10 @@ fn parse_cargo(text: &str) -> Vec<Dep> {
                 Some("workspace") => "workspace".into(),
                 Some(_) => "*".into(),
             };
-            match deps.iter_mut().find(|d| d.name == name && d.group == *group) {
+            match deps
+                .iter_mut()
+                .find(|d| d.name == name && d.group == *group)
+            {
                 // A later field refines the spec only if it says something.
                 Some(dep) if spec != "*" => dep.spec = spec,
                 Some(_) => {}
@@ -509,7 +512,12 @@ mod tests {
         );
         // Removing uses the real name, not "serde.workspace".
         assert_eq!(
-            describe(&remove_command(Manager::Cargo, Path::new("."), &deps[0].name, &deps[0].group)),
+            describe(&remove_command(
+                Manager::Cargo,
+                Path::new("."),
+                &deps[0].name,
+                &deps[0].group
+            )),
             "cargo remove serde"
         );
     }

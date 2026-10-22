@@ -221,15 +221,6 @@ fn input_text(input: &mut Input) -> &mut String {
     }
 }
 
-/// `path` with the home folder written as `~`.
-fn tilde(path: &Path) -> String {
-    let home = crate::store::home_dir();
-    match path.strip_prefix(&home) {
-        Ok(rel) if !home.as_os_str().is_empty() => format!("~/{}", rel.display()),
-        _ => path.display().to_string(),
-    }
-}
-
 impl App {
     fn config(&self) -> Config {
         Config::load(&config::path_for(&self.file)).unwrap_or_default()
@@ -764,7 +755,7 @@ impl App {
                     members.join(", ")
                 }),
             ]),
-            Line::from(vec![label("files"), Span::raw(tilde(&dir))]),
+            Line::from(vec![label("files"), Span::raw(ops::tilde(&dir))]),
         ];
         let links = self.env_links(&config, env, None);
         for (i, (name, url)) in links.iter().enumerate() {

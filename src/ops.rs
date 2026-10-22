@@ -274,6 +274,23 @@ fn is_gui_editor(program: &str) -> bool {
     GUI.contains(&name) || program.contains("Zed.app/")
 }
 
+/// `path` with the home folder written as `~`, e.g. `~/code/work`. The
+/// reverse of [`expand_tilde`]; both the real and the given home path match.
+pub fn tilde(path: &Path) -> String {
+    let home = store::home_dir();
+    let real_home = std::fs::canonicalize(&home).unwrap_or_else(|_| home.clone());
+    for base in [&real_home, &home] {
+        match path.strip_prefix(base) {
+            Ok(rel) if !base.as_os_str().is_empty() && rel.as_os_str().is_empty() => {
+                return "~".into()
+            }
+            Ok(rel) if !base.as_os_str().is_empty() => return format!("~/{}", rel.display()),
+            _ => {}
+        }
+    }
+    path.display().to_string()
+}
+
 pub fn expand_tilde(p: &str) -> PathBuf {
     match p.strip_prefix("~") {
         Some(rest) if rest.is_empty() || rest.starts_with('/') => {
@@ -297,6 +314,17 @@ mod tests {
         cmd.get_args()
             .map(|a| a.to_string_lossy().into_owned())
             .collect()
+    }
+
+    #[test]
+    fn tilde_shortens_paths_under_home() {
+        let home = store::home_dir();
+        let real_home = std::fs::canonicalize(&home).unwrap();
+        assert_eq!(tilde(&home.join("code/work")), "~/code/work");
+        assert_eq!(tilde(&real_home.join("code/work")), "~/code/work");
+        assert_eq!(tilde(&home), "~");
+        assert_eq!(tilde(Path::new("/usr/local")), "/usr/local");
+        assert_eq!(expand_tilde(&tilde(&home.join("a b"))), home.join("a b"));
     }
 
     #[test]

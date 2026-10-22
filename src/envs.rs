@@ -570,7 +570,8 @@ pub fn prepare_up(
     // .env files from before Rattle made them owner-only.
     let env_file = dir.join(".env");
     if env_file.exists() {
-        make_private(&env_file).map_err(|e| format!("cannot protect {}: {e}", env_file.display()))?;
+        make_private(&env_file)
+            .map_err(|e| format!("cannot protect {}: {e}", env_file.display()))?;
     }
     let mounts = mounts(env, &template, store);
     let yaml = override_yaml(env, &template, &mounts);
@@ -981,7 +982,10 @@ mod tests {
         {
             // .env holds passwords and tokens: owner-only.
             use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(made.dir.join(".env")).unwrap().permissions().mode();
+            let mode = std::fs::metadata(made.dir.join(".env"))
+                .unwrap()
+                .permissions()
+                .mode();
             assert_eq!(mode & 0o777, 0o600, "{mode:o}");
         }
         let env = read_env_file(&made.dir.join(".env"));

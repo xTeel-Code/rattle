@@ -688,11 +688,7 @@ fn env_create(file: &Path, config_file: &Path, config: &Config, rest: &[String])
                 let path = std::fs::canonicalize(ops::expand_tilde(dir))
                     .map_err(|e| format!("cannot access '{dir}': {e}"))?;
                 // Written as ~/… when under home, so the config stays readable.
-                let home = std::fs::canonicalize(store::home_dir()).unwrap_or_default();
-                dirs.push(match path.strip_prefix(&home) {
-                    Ok(rel) if !home.as_os_str().is_empty() => format!("~/{}", rel.display()),
-                    _ => path.display().to_string(),
-                });
+                dirs.push(ops::tilde(&path));
             }
             other if other.starts_with('-') => {
                 return Err(format!("unknown env create option: {other}").into())
