@@ -25,6 +25,8 @@ Run `rattle` with no arguments (or `rattle tui`) to open the interactive browser
 | `e` | open the project in your editor (`editor` in config, else `$VISUAL` / `$EDITOR`) |
 | `c` | edit `config.toml` in your editor; reloads and rescans when you close it |
 | `,` | settings form: edit the config without leaving the TUI |
+| `v` | dev environments: `u` start, `s` stop, `r` restart, `o`/`1`-`9` open links, `x` shell, `l` logs, `c` settings, `n` new |
+| `o` | open the project in its environment's editor (starts the environment if needed) |
 | `?` | all keys (`j`/`k` scroll in small terminals) |
 | `q` / `Esc` | quit |
 
@@ -53,6 +55,9 @@ new     - creates a project from a template and registers it
           rattle new <name> [-t | --template T] [--in folder]    rattle new --list
 deps    - lists, adds or removes dependencies with the project's package manager
           rattle deps [project] [list | add [--dev] <pkg>... | remove <pkg>...]
+env     - dev environments: one container per group of projects (see below)
+          rattle env [list | create <name> [--dir folder] | up | stop | restart |
+                     logs | shell | open | config | path <name>]
 config  - opens config.toml in your editor  (`rattle config path` prints its path)
 ```
 Omitted arguments are asked for interactively.
@@ -111,6 +116,76 @@ package manager to change it:
 
 Removing a dependency uses the group it is listed in (dev, build, optional, …).
 Without a project, `rattle deps` works on the current folder.
+
+## Dev environments
+Keep groups of projects in separate containers: your work repos in one, side
+projects in another, each with its own tools, git identity and storage. Projects
+belong to an environment by folder (or by name), and Rattle mounts exactly those
+projects into its container.
+
+```toml
+[envs.work]
+dirs = ["~/code/work"]        # projects in here belong to "work"
+
+[envs.personal]
+dirs = ["~/code/side"]
+projects = ["dotfiles"]       # more projects by name
+# mount = false               # a plain box: code lives only inside the container
+```
+
+```sh
+rattle env create work --dir ~/code/work   # also adds [envs.work] to the config
+rattle env config work                     # review its settings (.env), e.g. PASSWORD
+rattle env up work                         # start it; prints its links
+rattle env open work --project api         # browser editor at that project
+rattle env shell work api                  # a shell in the container, in that project
+rattle env stop work
+```
+In the TUI, projects show their environment as `[work ●]` (● running, ○ stopped),
+`v` manages environments and `o` opens the selected project in its environment.
+
+How it works:
+- Each environment's files live in `~/.rattle/envs/<name>/`: the template's
+  `compose.yaml` and `.env`, with a unique name (`rattle-<name>`) and a free port
+  range filled in, so environments never collide.
+- On every start Rattle rewrites `compose.override.yaml` to bind-mount the
+  environment's folders under the template's workdir (`~/code/work` →
+  `/workspace/work`). Changing which folders belong to it recreates the container
+  on the next start; Rattle says so first.
+- It needs Docker with Compose (Docker Desktop, OrbStack or colima) and `curl`.
+
+### Templates
+The built-in template is [bindle-le](https://github.com/suckharder/bindle-le): a
+browser VS Code box with Node, Python, Go, Docker and Claude Code. Every part of a
+template is configurable, so you can tweak it or bring your own compose setup:
+
+```toml
+[env_templates.bindle]
+compose = "https://raw.githubusercontent.com/suckharder/bindle-le/main/template/compose.yaml"
+env_file = "https://raw.githubusercontent.com/suckharder/bindle-le/main/template/.env.example"
+port_base = 18000            # first environment; each next one +port_step
+port_step = 100
+
+[env_templates.bindle.links] # opened by `o` / `rattle env open`; ${VAR} comes from .env
+editor = "http://127.0.0.1:${PORT_CODE}/?folder=${FOLDER}"
+
+[env_templates.mine]         # a new template: any compose project works
+compose = "~/templates/dev/compose.yaml"
+service = "dev"              # the service projects are mounted into
+workdir = "/src"
+[env_templates.mine.ports]   # .env variable = offset from the environment's base port
+WEB_PORT = 0
+```
+Other settings: `name_var`, `shell_user`, `shell`, and at the top level
+`envs_dir`, `docker` (e.g. `"podman"`) and `browser`.
+
+### Security
+- bindle runs **privileged** (it has Docker inside). A container escape is a host
+  compromise, and anything in the box can change the projects mounted into it.
+  Only mount what belongs there; don't use it for untrusted code.
+- Without `PASSWORD` in its `.env`, bindle's editor has **no authentication**.
+  Its ports bind to `127.0.0.1` only; keep it that way.
+- Rattle never runs `docker compose down -v`, which deletes an environment's volumes.
 
 ## Deleting project folders
 Off by default. Set `delete_files` to allow `D` / `rattle delete <name> --files`:

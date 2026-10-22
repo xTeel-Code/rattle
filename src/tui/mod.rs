@@ -3,8 +3,10 @@
 //! Drawn on stderr so the selected path can be printed to stdout on exit,
 //! which makes `cd "$(rattle)"` work.
 
+use std::collections::HashMap;
 use std::io::{self, Stderr};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
 use ratatui::backend::CrosstermBackend;
@@ -22,16 +24,19 @@ use ratatui::{Frame, Terminal};
 
 use crate::config::{self, Config, DeleteFiles};
 use crate::deps::{self, Dep, Manager};
+use crate::envs;
 use crate::ops;
 use crate::settings::{FormAction, SettingsForm};
-use crate::store::Store;
+use crate::store::{Project, Store};
 use crate::templates::{self, Template};
 
 mod deps_view;
 mod draw;
+mod envs_view;
 mod job;
 
 use deps_view::{DepsAction, DepsView};
+use envs_view::EnvsView;
 use job::{Job, JobKind};
 
 type Term = Terminal<CrosstermBackend<Stderr>>;
@@ -45,6 +50,8 @@ const KEYS: &[(&str, &str)] = &[
     ("a", "add project folder"),
     ("n", "new project from a template"),
     ("p", "dependencies: list, add, remove"),
+    ("v", "dev environments: start, stop, open"),
+    ("o", "open project in its environment"),
     ("d", "delete entry (files are kept)"),
     ("D", "delete entry and folder (delete_files)"),
     ("s", "scan folders from config.toml"),
@@ -90,6 +97,8 @@ enum Mode {
     Deps(Box<DepsView>),
     /// `,`: the settings form.
     Settings(Box<SettingsForm>),
+    /// `v`: dev environments.
+    Envs(Box<EnvsView>),
     /// `?`: the key list, scrolled by `scroll` rows when it doesn't fit.
     Help {
         scroll: usize,
@@ -109,6 +118,12 @@ struct App {
     quit: bool,
     /// A template or package-manager command running in the background.
     job: Option<Job>,
+    /// The environment each project belongs to (project name → env name).
+    project_envs: HashMap<String, String>,
+    /// Last known status of each environment.
+    env_status: HashMap<String, envs::Status>,
+    /// Statuses being read on a background thread (`docker compose ps` is slow).
+    env_status_rx: Option<Receiver<Vec<(String, envs::Status)>>>,
 }
 
 pub fn run(file: &Path) -> Result<()> {
@@ -124,6 +139,9 @@ pub fn run(file: &Path) -> Result<()> {
         chosen: None,
         quit: false,
         job: None,
+        project_envs: HashMap::new(),
+        env_status: HashMap::new(),
+        env_status_rx: None,
     };
     app.refilter();
 
@@ -134,9 +152,10 @@ pub fn run(file: &Path) -> Result<()> {
     }));
 
     let mut term = setup()?;
-    let result = app
-        .auto_scan(&mut term)
-        .and_then(|()| app.event_loop(&mut term));
+    let result = app.auto_scan(&mut term).and_then(|()| {
+        app.refresh_envs();
+        app.event_loop(&mut term)
+    });
     restore()?;
     result?;
 
@@ -174,9 +193,11 @@ impl App {
         let mut enter_guard = Instant::now() + STARTUP_ENTER_GUARD;
         while !self.quit {
             term.draw(|f| self.draw(f))?;
-            // While a job runs, wake up regularly to animate it and notice it finishing.
-            if self.job.is_some() {
+            // While a job runs or statuses load, wake up regularly to animate
+            // it and notice it finishing.
+            if self.job.is_some() || self.env_status_rx.is_some() {
                 self.tick_job();
+                self.tick_env_status();
                 if !event::poll(Duration::from_millis(100))? {
                     continue;
                 }
@@ -296,6 +317,14 @@ impl App {
                 } else {
                     self.set_status("cancelled; nothing was deleted", false);
                 }
+            }
+            Mode::Envs(view) => {
+                let envs = Config::load(&config::path_for(&self.file))
+                    .map(|c| c.envs)
+                    .unwrap_or_default();
+                let action = view.on_key(key, &envs);
+                self.status = None;
+                self.on_envs_action(action, term)?;
             }
             Mode::Settings(form) => match form.on_key(key) {
                 FormAction::Nothing => {}
@@ -425,6 +454,11 @@ impl App {
                 Err(e) => self.set_status(format!("cannot read config: {e}"), true),
             },
             KeyCode::Char('D') => self.start_delete_files(),
+            KeyCode::Char('v') => {
+                self.refresh_envs();
+                self.mode = Mode::Envs(Box::new(EnvsView::new()));
+            }
+            KeyCode::Char('o') => self.open_project_in_env(),
             KeyCode::Char('p') => {
                 if let Some(i) = self.selected() {
                     let p = &self.store.projects[i];
@@ -478,6 +512,7 @@ impl App {
         self.save();
         self.filter.clear();
         self.refilter();
+        self.refresh_envs();
         self.list.select(
             self.visible
                 .iter()
@@ -531,7 +566,11 @@ impl App {
             return;
         };
         let job = self.job.take().expect("polled job exists");
+        if matches!(job.kind, JobKind::Env { .. } | JobKind::EnvLogs { .. }) {
+            return self.finish_env_job(&job, &output);
+        }
         match job.kind {
+            JobKind::Env { .. } | JobKind::EnvLogs { .. } => {}
             JobKind::NewProject {
                 name,
                 template,
@@ -557,6 +596,7 @@ impl App {
                         );
                         let parent = target.parent().unwrap_or(&target);
                         self.set_status(format!("created '{name}' in {}", parent.display()), false);
+                        self.refresh_envs();
                     }
                     Err(e) => self.set_status(e, true),
                 }
@@ -656,6 +696,7 @@ impl App {
             self.save();
         }
         self.refilter();
+        self.refresh_envs();
         let missing = self.store.missing().len();
         if quiet && report.added.is_empty() && report.warnings.is_empty() && missing == 0 {
             return;
@@ -675,6 +716,28 @@ impl App {
         self.set_status(msg, !report.warnings.is_empty());
     }
 
+    /// Leaves the TUI, runs an interactive `cmd` (editor, shell) in the
+    /// terminal, then comes back. The inner result is whether it could start.
+    fn run_suspended(
+        &mut self,
+        cmd: &mut std::process::Command,
+        term: &mut Term,
+    ) -> Result<io::Result<std::process::ExitStatus>> {
+        restore()?;
+        let status = cmd.status();
+        enable_raw_mode()?;
+        execute!(
+            io::stderr(),
+            EnterAlternateScreen,
+            ClearScreen(ClearType::All)
+        )?;
+        // Not `term.clear()`: it asks the terminal for the cursor position over
+        // stdout, which never answers when stdout is captured (`cd "$(rattle)"`).
+        // A fresh Terminal has empty buffers, so the next draw repaints everything.
+        *term = Terminal::new(CrosstermBackend::new(io::stderr()))?;
+        Ok(status)
+    }
+
     /// Suspends the TUI, runs the editor on `target` inside `dir`, then restores
     /// the TUI. `wait` makes GUI editors block until the file is closed.
     /// Returns whether the editor could be started.
@@ -690,20 +753,7 @@ impl App {
             .ok()
             .and_then(|c| c.editor);
         let (mut cmd, editor) = ops::editor_command(configured.as_deref(), dir, target, wait);
-        restore()?;
-        let status = cmd.status();
-        enable_raw_mode()?;
-        execute!(
-            io::stderr(),
-            EnterAlternateScreen,
-            ClearScreen(ClearType::All)
-        )?;
-        // Not `term.clear()`: it asks the terminal for the cursor position over
-        // stdout, which never answers when stdout is captured (`cd "$(rattle)"`).
-        // A fresh Terminal has empty buffers, so the next draw repaints everything.
-        *term = Terminal::new(CrosstermBackend::new(io::stderr()))?;
-
-        match status {
+        match self.run_suspended(&mut cmd, term)? {
             Ok(_) => Ok(true),
             Err(e) => {
                 self.set_status(format!("could not run '{editor}': {e}"), true);
@@ -747,6 +797,7 @@ impl App {
             Ok(c) => c,
             Err(e) => return self.set_status(format!("cannot read config: {e}"), true),
         };
+        self.refresh_envs();
         if config.scan_dirs.is_empty() {
             self.set_status(
                 format!("{done}; set scan_dirs to find projects automatically"),

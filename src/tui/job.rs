@@ -17,6 +17,11 @@ pub(super) enum JobKind {
     },
     /// `p`: reload the dependency view.
     Deps,
+    /// An environment start/stop/restart; afterwards refresh statuses and,
+    /// if set, open this URL.
+    Env { open: Option<String> },
+    /// `l`: show the environment's logs.
+    EnvLogs { env: String },
 }
 
 pub(super) struct Job {

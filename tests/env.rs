@@ -3,7 +3,7 @@
 
 mod common;
 
-use common::{canon, Sandbox};
+use common::{canon, Sandbox, Tui};
 
 /// A sandbox with work and side projects, a fake docker and browser, and the
 /// bindle template pointed at local files (no network).
@@ -249,4 +249,128 @@ fn mount_false_env_gets_no_mounts_and_docker_problems_are_reported() {
         .run(&["env", "up", "box"])
         .err()
         .contains("could not run /no/such/docker"));
+}
+
+/// A sandbox with "work" and "personal" environments already created.
+fn with_two_envs(name: &str, port_base: u16) -> Sandbox {
+    let sb = sandbox(name, port_base);
+    sb.dir("code/loose/.git"); // in no environment
+    sb.run(&["scan"]).ok();
+    sb.run(&["env", "create", "work", "--dir", "code/work"])
+        .ok();
+    sb.run(&["env", "create", "personal", "--dir", "code/side"])
+        .ok();
+    sb
+}
+
+#[test]
+fn tui_tags_projects_and_starts_and_stops_environments() {
+    let sb = with_two_envs("env-tui", 43000);
+    let Some(tui) = Tui::start(&sb, "env-tui", &[]) else {
+        return;
+    };
+    tui.wait_for("[work ○]");
+    let screen = tui.wait_for("[personal ○]");
+    let loose = screen.lines().find(|l| l.contains("loose")).unwrap();
+    assert!(
+        !loose.contains('['),
+        "a project in no environment has no tag: {loose}"
+    );
+
+    tui.keys(&["v"]);
+    tui.wait_for(" Environments ");
+    tui.wait_for("○ stopped");
+    tui.wait_for("1 editor: http://127.0.0.1:43000/?folder=/workspace");
+    tui.keys(&["u"]);
+    tui.wait_for("starting 'work': done");
+    tui.wait_for("● running");
+    let log = read(&sb, "docker.log");
+    assert!(
+        log.contains(&format!(
+            "{} compose up -d",
+            canon(&sb.home.join(".rattle/envs/work"))
+        )),
+        "{log}"
+    );
+
+    tui.keys(&["s"]);
+    tui.wait_for("stopping 'work': done");
+    tui.keys(&["j", "u"]); // the second one: personal
+    tui.wait_for("starting 'personal': done");
+    tui.keys(&["Escape"]);
+    tui.wait_for("[personal ●]");
+    tui.wait_for("[work ○]");
+}
+
+#[test]
+fn tui_o_starts_the_environment_then_opens_the_project() {
+    let sb = with_two_envs("env-tui-open", 43200);
+    let Some(tui) = Tui::start(&sb, "env-tui-open", &[]) else {
+        return;
+    };
+    tui.wait_for("[work ○]");
+    tui.keys(&["/"]);
+    tui.type_text("api");
+    tui.keys(&["Enter", "o"]);
+    // Starts it first ("starting 'work'"), then opens the link at the project.
+    tui.wait_for("opened http://127.0.0.1:43200/?folder=/workspace/work/api");
+    // The browser is launched without waiting for it; give it a moment.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while read(&sb, "browser.log").is_empty() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert_eq!(
+        read(&sb, "browser.log"),
+        "http://127.0.0.1:43200/?folder=/workspace/work/api\n"
+    );
+    tui.wait_for("[work ●]");
+
+    // Already running: opens at once, without starting it again.
+    tui.keys(&["o"]);
+    tui.wait_for("opened");
+    let ups = read(&sb, "docker.log").matches("compose up -d").count();
+    assert_eq!(ups, 1, "{}", read(&sb, "docker.log"));
+
+    tui.keys(&["Escape", "/"]);
+    tui.type_text("loose");
+    tui.keys(&["Enter", "o"]);
+    tui.wait_for("'loose' isn't in an environment");
+}
+
+#[test]
+fn tui_creates_an_environment_and_shows_logs_and_links() {
+    let sb = sandbox("env-tui-new", 43400);
+    let Some(tui) = Tui::start(&sb, "env-tui-new", &[]) else {
+        return;
+    };
+    tui.wait_for("Projects (");
+    tui.keys(&["v"]);
+    tui.wait_for("No environments yet. Press n");
+    tui.keys(&["n"]);
+    tui.type_text("side");
+    tui.keys(&["Enter"]);
+    tui.wait_for("Folders for 'side'");
+    tui.type_text("~/code/side");
+    tui.keys(&["Enter"]);
+    tui.wait_for("created 'side'");
+    assert!(
+        sb.config_text()
+            .contains("[envs.side]\ntemplate = \"bindle\"\ndirs = [\"~/code/side\"]"),
+        "{}",
+        sb.config_text()
+    );
+    assert!(sb.home.join(".rattle/envs/side/compose.yaml").is_file());
+    tui.wait_for("1 project(s)");
+
+    tui.keys(&["l"]);
+    tui.wait_for("logs: side");
+    tui.wait_for("fake log line");
+    tui.keys(&["x"]); // back to the list
+    tui.wait_for("2 files: http://127.0.0.1:43404");
+    tui.keys(&["2"]); // opens link 2 (starts the environment first)
+    tui.wait_for("opened http://127.0.0.1:43404");
+    tui.keys(&["n"]);
+    tui.type_text("Bad Name");
+    tui.keys(&["Enter", "Enter"]);
+    tui.wait_for("invalid environment name 'Bad Name'");
 }
