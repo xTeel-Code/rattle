@@ -267,28 +267,9 @@ GUI editors (`zed`, `code`, `cursor`, `subl`, …) get `--wait` automatically wh
 editing the config, so Rattle reloads it once you close the file; projects opened
 with `e` don't wait.
 
-## Development
-```sh
-cargo fmt                              # format
-cargo clippy --all-targets             # lint
-cargo test                             # unit + end-to-end tests
-cargo test -- --ignored                # also tests that need network access
-sh tests/install_test.sh               # install.sh against a local fake release
-```
-The end-to-end tests run the real binary in a throwaway home folder, so they
-never touch your `~/.rattle`. `tests/cli.rs` covers the commands, `tests/env.rs`
-dev environments (with a fake `docker`), and `tests/tui.rs` drives the TUI inside
-tmux (skipped when tmux isn't installed). CI runs all of this on Linux and macOS
-for every pull request, plus shellcheck and a static Linux release build.
-
-### Releasing
-Bump `version` in `Cargo.toml`, then tag:
-```sh
-git tag v0.3.0 && git push origin v0.3.0
-```
-The release workflow builds binaries for macOS (arm64, x86_64) and Linux
-(x86_64, arm64; static musl), uploads them with SHA-256 checksums, and publishes
-the release. `install.sh` picks them up from then on.
+## Contributing
+Want to help? See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, tests, the code
+layout and how releases are made.
 
 ## Roadmap
 - [x] Made Working MVP
