@@ -438,6 +438,78 @@ fn find_top_level_key(lines: &[String], key: &str) -> Option<(usize, usize)> {
     None
 }
 
+/// Line range of `[table]`: its header, and the end (exclusive) before the
+/// next table header or the end of the file.
+fn table_span(lines: &[String], table: &str) -> Option<(usize, usize)> {
+    let header = lines.iter().position(|raw| {
+        let line = strip_comment(raw).trim();
+        is_table_header(line) && line[1..line.len() - 1].trim() == table
+    })?;
+    let end = first_table_header(&lines[header + 1..]).map_or(lines.len(), |i| header + 1 + i);
+    Some((header, end))
+}
+
+/// Sets `key = value` inside `[table]`, replacing the existing assignment
+/// (multi-line arrays included) or adding it after the header. `None` if
+/// there is no such table.
+pub fn set_table_value(text: &str, table: &str, key: &str, value: &str) -> Option<String> {
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let (header, end) = table_span(&lines, table)?;
+    let new_line = format!("{key} = {value}");
+    match find_top_level_key(&lines[header + 1..end], key) {
+        Some((start, last)) => {
+            lines.splice(header + 1 + start..=header + 1 + last, [new_line]);
+        }
+        None => lines.insert(header + 1, new_line),
+    }
+    let mut out = lines.join("\n");
+    out.push('\n');
+    Some(out)
+}
+
+/// Removes `[table]` and everything in it (and a blank line left before it).
+pub fn remove_table(text: &str, table: &str) -> Option<String> {
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let (mut header, mut end) = table_span(&lines, table)?;
+    // Keep the blank lines that separate it from the next table…
+    while end > header + 1 && lines[end - 1].trim().is_empty() {
+        end -= 1;
+    }
+    // …and drop the one in front of it instead.
+    if header > 0 && lines[header - 1].trim().is_empty() {
+        header -= 1;
+    }
+    lines.drain(header..end);
+    let mut out = lines.join("\n");
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    Some(out)
+}
+
+/// [`set_table_value`] on the config file. Errors if the table is missing.
+pub fn save_table_value(file: &Path, table: &str, key: &str, value: &str) -> io::Result<()> {
+    let text = fs::read_to_string(file)?;
+    let new = set_table_value(&text, table, key, value).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::NotFound, format!("no [{table}] in config"))
+    })?;
+    let tmp = file.with_extension("toml.tmp");
+    fs::write(&tmp, new)?;
+    fs::rename(tmp, file)
+}
+
+/// [`remove_table`] on the config file. Returns whether the table was there.
+pub fn delete_table(file: &Path, table: &str) -> io::Result<bool> {
+    let text = fs::read_to_string(file)?;
+    let Some(new) = remove_table(&text, table) else {
+        return Ok(false);
+    };
+    let tmp = file.with_extension("toml.tmp");
+    fs::write(&tmp, new)?;
+    fs::rename(tmp, file)?;
+    Ok(true)
+}
+
 fn first_table_header(lines: &[String]) -> Option<usize> {
     let mut depth = 0i32;
     for (i, raw) in lines.iter().enumerate() {
@@ -674,6 +746,40 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn table_values_are_set_and_tables_removed_in_place() {
+        let text =
+            "scan_dirs = [\"code\"]\n\n[envs.work]\n# my work stuff\ntemplate = \"bindle\"\n\
+                    dirs = [\n  \"~/a\",\n  \"~/b\",\n]\n\n[envs.personal]\ndirs = [\"~/side\"]\n";
+        let out = set_table_value(text, "envs.work", "dirs", "[\"~/code/work\"]").unwrap();
+        assert_eq!(
+            out,
+            "scan_dirs = [\"code\"]\n\n[envs.work]\n# my work stuff\ntemplate = \"bindle\"\n\
+             dirs = [\"~/code/work\"]\n\n[envs.personal]\ndirs = [\"~/side\"]\n"
+        );
+        // Missing key: added right after the header; other tables untouched.
+        let out = set_table_value(&out, "envs.personal", "mount", "false").unwrap();
+        assert!(
+            out.contains("[envs.personal]\nmount = false\ndirs = [\"~/side\"]\n"),
+            "{out}"
+        );
+        let c = Config::parse(&out);
+        assert_eq!(c.envs[0].dirs, vec!["~/code/work"]);
+        assert!(!c.envs[1].mount);
+        assert!(set_table_value(&out, "envs.ghost", "dirs", "[]").is_none());
+
+        let removed = remove_table(&out, "envs.work").unwrap();
+        assert_eq!(
+            removed,
+            "scan_dirs = [\"code\"]\n\n[envs.personal]\nmount = false\ndirs = [\"~/side\"]\n"
+        );
+        assert_eq!(
+            remove_table(&removed, "envs.personal").unwrap(),
+            "scan_dirs = [\"code\"]\n"
+        );
+        assert!(remove_table(&removed, "envs.ghost").is_none());
     }
 
     #[test]

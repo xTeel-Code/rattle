@@ -53,6 +53,7 @@ Dev environments (one container per group of projects; alias: envs)
   env open <name> [link] [--project P]   open a link (default: the editor)
   env config <name>          edit its settings (.env)
   env path <name>            print the folder with its files
+  env remove <name>          remove it: container, files, config (volumes stay)
 
 Settings and info
   config                     edit config.toml in your editor
@@ -484,7 +485,7 @@ usage: rattle env [list]
        rattle env logs <name> [-f]
        rattle env shell <name> [project]
        rattle env open <name> [link] [--project P]
-       rattle env config | path <name>";
+       rattle env config | path | remove <name>";
 
 /// `rattle env …`: dev environments, one container per group of projects.
 fn env_command(file: &Path, args: &[String]) -> Result<()> {
@@ -610,6 +611,35 @@ fn env_command(file: &Path, args: &[String]) -> Result<()> {
         "path" => {
             let env = envs::find_env(&config, &name()?)?;
             println!("{}", envs::env_dir(&config, file, &env.name).display());
+            Ok(())
+        }
+        "remove" | "rm" => {
+            let env = envs::find_env(&config, &name()?)?;
+            let dir = envs::env_dir(&config, file, &env.name);
+            if !io::stdin().is_terminal() {
+                return Err(
+                    "removing an environment needs an interactive terminal to confirm".into(),
+                );
+            }
+            println!(
+                "This removes environment '{}': its container, its files in {}\n\
+                 and its [envs.{}] section. Its volumes (code and settings inside the\n\
+                 box) are kept: creating '{}' again reattaches them.",
+                env.name,
+                dir.display(),
+                env.name,
+                env.name
+            );
+            if prompt(&format!("Type '{}' to confirm: ", env.name))? != env.name {
+                println!("Cancelled; nothing was removed.");
+                return Ok(());
+            }
+            if envs::is_created(&dir) {
+                // `down` without -v: the container goes, the volumes stay.
+                run_visible(envs::compose(&config, &dir, &["down"]))?;
+            }
+            envs::forget(&config, file, &env.name)?;
+            println!("Removed environment '{}'.", env.name);
             Ok(())
         }
         _ => Err(format!("unknown env command: {action}\n{ENV_USAGE}").into()),

@@ -27,7 +27,7 @@ fn sandbox(name: &str, port_base: u16) -> Sandbox {
             "echo \"$(pwd) $*\" >> '{}'\nstate=\"$(pwd)/.fake-state\"\ncase \"$2\" in\n\
              ps) [ -f \"$state\" ] && printf '{{\"Service\":\"bindle\",\"State\":\"%s\"}}\\n' \"$(cat \"$state\")\" ;;\n\
              up) echo running > \"$state\" ;;\nstop) echo exited > \"$state\" ;;\nrestart) echo running > \"$state\" ;;\n\
-             logs) echo 'fake log line' ;;\nexec) echo \"exec: $*\" ;;\nesac\nexit 0",
+             logs) echo 'fake log line' ;;\nexec) echo \"exec: $*\" ;;\ndown) rm -f \"$state\" ;;\nesac\nexit 0",
             log.display()
         ),
     );
@@ -277,10 +277,13 @@ fn tui_tags_projects_and_starts_and_stops_environments() {
         "a project in no environment has no tag: {loose}"
     );
 
-    tui.keys(&["v"]);
-    tui.wait_for(" Environments ");
+    tui.keys(&["Tab"]);
+    tui.wait_for(" Environments (2) ");
     tui.wait_for("○ stopped");
-    tui.wait_for("1 editor: http://127.0.0.1:43000/?folder=/workspace");
+    // The detail pane of the selected one.
+    tui.wait_for("folders   ~/code/work");
+    tui.wait_for("projects  api, web");
+    tui.wait_for("1 editor  http://127.0.0.1:43000/?folder=/workspace");
     tui.keys(&["u"]);
     tui.wait_for("starting 'work': done");
     tui.wait_for("● running");
@@ -345,7 +348,8 @@ fn tui_creates_an_environment_and_shows_logs_and_links() {
     };
     tui.wait_for("Projects (");
     tui.keys(&["v"]);
-    tui.wait_for("No environments yet. Press n");
+    tui.wait_for("No environments yet.");
+    tui.wait_for("Press n to create one.");
     tui.keys(&["n"]);
     tui.type_text("side");
     tui.keys(&["Enter"]);
@@ -366,11 +370,118 @@ fn tui_creates_an_environment_and_shows_logs_and_links() {
     tui.wait_for("logs: side");
     tui.wait_for("fake log line");
     tui.keys(&["x"]); // back to the list
-    tui.wait_for("2 files: http://127.0.0.1:43404");
+    tui.wait_for("2 files  http://127.0.0.1:43404");
     tui.keys(&["2"]); // opens link 2 (starts the environment first)
     tui.wait_for("opened http://127.0.0.1:43404");
     tui.keys(&["n"]);
     tui.type_text("Bad Name");
     tui.keys(&["Enter", "Enter"]);
     tui.wait_for("invalid environment name 'Bad Name'");
+}
+
+#[test]
+fn tui_envs_tab_changes_folders_and_mounting() {
+    let sb = with_two_envs("env-tui-edit", 43600);
+    let Some(tui) = Tui::start(&sb, "env-tui-edit", &[]) else {
+        return;
+    };
+    tui.wait_for("[work ○]");
+    tui.keys(&["Tab"]);
+    tui.wait_for("folders   ~/code/work");
+
+    // d: the current folders are prefilled; replace them.
+    tui.keys(&["d"]);
+    tui.wait_for("Folders for 'work' (comma-separated): ~/code/work");
+    for _ in 0.."~/code/work".len() {
+        tui.keys(&["BSpace"]);
+    }
+    tui.type_text("~/code/work, ~/code/side");
+    tui.keys(&["Enter"]);
+    tui.wait_for("folders saved; they apply when 'work' starts");
+    tui.wait_for("folders   ~/code/work, ~/code/side");
+    let config = sb.config_text();
+    assert!(
+        config.contains(
+            "[envs.work]\ntemplate = \"bindle\"\ndirs = [\"~/code/work\", \"~/code/side\"]\n"
+        ),
+        "{config}"
+    );
+    assert!(
+        config.contains("[envs.personal]"),
+        "other environments are untouched: {config}"
+    );
+    tui.wait_for("projects  api, game, web");
+
+    // m: toggle mounting, written to its section.
+    tui.keys(&["m"]);
+    tui.wait_for("projects won't be mounted");
+    tui.wait_for("no: code lives only inside");
+    assert!(
+        sb.config_text().contains("[envs.work]\nmount = false\n"),
+        "{}",
+        sb.config_text()
+    );
+    tui.keys(&["m"]);
+    tui.wait_for("yes: its projects are mounted");
+
+    // Tab and Esc go back to Projects; the tags follow the new folders.
+    tui.keys(&["Escape"]);
+    tui.wait_for("Projects (4)");
+    let screen = tui.wait_for("game");
+    let game = screen.lines().find(|l| l.contains("game")).unwrap();
+    assert!(game.contains("[work"), "game now belongs to work: {game}");
+}
+
+#[test]
+fn tui_envs_tab_removes_an_environment_after_typing_its_name() {
+    let sb = with_two_envs("env-tui-remove", 43800);
+    sb.run(&["env", "up", "work"]).ok();
+    let work_dir = sb.home.join(".rattle/envs/work");
+    let work_canon = canon(&work_dir); // before it is removed
+    let Some(tui) = Tui::start(&sb, "env-tui-remove", &[]) else {
+        return;
+    };
+    tui.wait_for("[work ●]");
+    tui.keys(&["Tab"]);
+    tui.wait_for("● running");
+
+    // A wrong name cancels.
+    tui.keys(&["D"]);
+    tui.wait_for("Remove 'work' (container and files; volumes stay)? Type 'work':");
+    tui.type_text("wrk");
+    tui.keys(&["Enter"]);
+    tui.wait_for("cancelled; nothing was removed");
+    assert!(work_dir.is_dir() && sb.config_text().contains("[envs.work]"));
+
+    tui.keys(&["D"]);
+    tui.type_text("work");
+    tui.keys(&["Enter"]);
+    tui.wait_for("removed 'work'; its volumes are kept");
+    tui.wait_for(" Environments (1) ");
+    let log = read(&sb, "docker.log");
+    assert!(log.contains(&format!("{work_canon} compose down")), "{log}");
+    assert!(
+        !log.contains("down -v"),
+        "volumes must never be removed: {log}"
+    );
+    assert!(!work_dir.exists(), "its files are removed");
+    let config = sb.config_text();
+    assert!(
+        !config.contains("[envs.work]") && config.contains("[envs.personal]"),
+        "{config}"
+    );
+
+    // Back in Projects, work's projects no longer have a tag.
+    tui.keys(&["Tab"]);
+    let screen = tui.wait_for("Projects (");
+    let api = screen.lines().find(|l| l.contains(" api ")).unwrap();
+    assert!(!api.contains("[work"), "{api}");
+}
+
+#[test]
+fn cli_env_remove_needs_a_terminal() {
+    let sb = with_two_envs("env-remove-cli", 44000);
+    let err = sb.run(&["env", "remove", "work"]).err();
+    assert!(err.contains("needs an interactive terminal"), "{err}");
+    assert!(sb.config_text().contains("[envs.work]"));
 }

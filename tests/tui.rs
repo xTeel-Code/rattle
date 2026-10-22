@@ -423,7 +423,7 @@ fn help_scrolls_and_footer_fits_in_a_small_terminal() {
     for _ in 0..30 {
         tui.keys(&["j"]); // past the end: clamped
     }
-    tui.wait_for("q / Esc");
+    tui.wait_for("back to Proj"); // the last key (cut off in 50 columns)
     tui.wait_for("↑  j/k");
     tui.keys(&["k"]);
     tui.wait_for("↑↓ j/k"); // one step back up works at once
