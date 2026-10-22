@@ -124,7 +124,7 @@ delete_files = \"off\"
 #
 # Every built-in template setting can be overridden, or a new template added:
 # [env_templates.bindle]
-# compose = \"https://raw.githubusercontent.com/suckharder/bindle-le/main/template/compose.yaml\"
+# compose = \"~/templates/bindle/compose.yaml\"   # a URL or a local file
 # port_base = 18000
 # [env_templates.bindle.links]
 # editor = \"http://127.0.0.1:${PORT_CODE}/?folder=${FOLDER}\"

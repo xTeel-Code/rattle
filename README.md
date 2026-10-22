@@ -244,13 +244,17 @@ How it works:
 
 ### Templates
 The built-in template is [bindle-le](https://github.com/suckharder/bindle-le): a
-browser VS Code box with Node, Python, Go, Docker and Claude Code. Every part of a
-template is configurable, so you can tweak it or bring your own compose setup:
+browser VS Code box with Node, Python, Go, Docker and Claude Code. Its files come
+from a fixed, reviewed bindle-le commit rather than its latest version, because
+they start a privileged container; Rattle releases move that commit on purpose.
+
+Every part of a template is configurable, so you can tweak it or bring your own
+compose setup:
 
 ```toml
 [env_templates.bindle]
-compose = "https://raw.githubusercontent.com/suckharder/bindle-le/main/template/compose.yaml"
-env_file = "https://raw.githubusercontent.com/suckharder/bindle-le/main/template/.env.example"
+compose = "~/templates/bindle/compose.yaml"   # a URL or a local file
+env_file = "~/templates/bindle/.env.example"
 port_base = 18000            # first environment; each next one +port_step
 port_step = 100
 
