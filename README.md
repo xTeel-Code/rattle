@@ -1,11 +1,53 @@
-### Rattle ###
-is newly developed project manager CLI written in Rust (WIP)
-just to see your projects in one app with no looking for specific folder
+# Rattle
+
+All your projects in one place, without hunting for folders. Rattle is a
+terminal project manager: it finds your projects, lets you jump into one with
+a keypress, and handles the chores around them.
+
+- **Find**: scans your code folders and registers every project it finds
+- **Jump**: `cd "$(rattle)"` picks a project in the TUI and takes you there
+- **Open**: in your editor (`e`), or in its dev environment's browser editor (`o`)
+- **Create**: new projects from templates (Rust, Python, Node, Go, or your own)
+- **Dependencies**: list, add and remove them with the project's own package manager
+- **Dev environments**: separate containers for groups of projects, e.g. work and personal
+- **Tidy up**: drop entries whose folder is gone; optionally delete project folders
 
 ## Install
 ```sh
-cargo install --path .
+curl -fsSL https://raw.githubusercontent.com/xTeel-Code/rattle/main/install.sh | sh
 ```
+This installs `rattle` to `~/.local/bin` on macOS (Apple Silicon or Intel) and
+Linux (x86_64 or ARM). It downloads the latest release's prebuilt binary and
+verifies its checksum, or builds from source with `cargo` when there is none.
+The script is short; [read it](install.sh) before piping it to `sh` if you like.
+
+Options, as environment variables in front of `sh`:
+
+| Variable | Default | |
+| --- | --- | --- |
+| `RATTLE_INSTALL_DIR` | `~/.local/bin` | where to put `rattle` |
+| `RATTLE_VERSION` | latest | a release tag, e.g. `v0.3.0` |
+| `RATTLE_FROM_SOURCE` | `0` | `1` builds with `cargo` even when a binary exists |
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/xTeel-Code/rattle/main/install.sh | RATTLE_INSTALL_DIR=/usr/local/bin sh
+```
+Run the same command again to update.
+
+With Rust installed you can also use cargo directly:
+```sh
+cargo install --locked --git https://github.com/xTeel-Code/rattle   # latest main
+cargo install --locked --path .                                     # from a clone
+```
+
+## Quick start
+```sh
+rattle scan ~/code         # register every project under ~/code
+rattle                     # open the TUI: move with j/k, Enter jumps, ? shows all keys
+cd "$(rattle)"             # pick a project and cd into it
+```
+To make plain `rattle scan` and the TUI's auto-scan use your folders, set
+`scan_dirs` in the config: press `,` in the TUI, or run `rattle config`.
 
 ## TUI
 Run `rattle` with no arguments (or `rattle tui`) to open the interactive browser:
@@ -208,10 +250,19 @@ auto_scan = true                   # rescan when the TUI opens
 editor = "zed"                     # overrides $VISUAL / $EDITOR
 delete_files = "off"               # off | trash | permanent
 new_project_dir = "~/code"         # default: the first scan folder
+browser = "open -a Firefox"        # opens environment links; default: open / xdg-open
+docker = "docker"                  # container CLI for environments, e.g. "podman"
 # optional, replace the defaults
 markers = [".git", "Cargo.toml"]
 ignore = ["node_modules", "target"]
+
+[templates]                        # your own `rattle new` templates
+web = "npm create vite@latest {name} -- --template react-ts"
+
+[envs.work]                        # dev environments, see above
+dirs = ["~/code/work"]
 ```
+Everything else lives in the commented template Rattle writes on first run.
 GUI editors (`zed`, `code`, `cursor`, `subl`, …) get `--wait` automatically when
 editing the config, so Rattle reloads it once you close the file; projects opened
 with `e` don't wait.
@@ -222,11 +273,22 @@ cargo fmt                              # format
 cargo clippy --all-targets             # lint
 cargo test                             # unit + end-to-end tests
 cargo test -- --ignored                # also tests that need network access
+sh tests/install_test.sh               # install.sh against a local fake release
 ```
 The end-to-end tests run the real binary in a throwaway home folder, so they
-never touch your `~/.rattle`. `tests/cli.rs` covers the commands and
-`tests/tui.rs` drives the TUI inside tmux (skipped when tmux isn't installed).
-CI runs all of this on Linux and macOS for every pull request.
+never touch your `~/.rattle`. `tests/cli.rs` covers the commands, `tests/env.rs`
+dev environments (with a fake `docker`), and `tests/tui.rs` drives the TUI inside
+tmux (skipped when tmux isn't installed). CI runs all of this on Linux and macOS
+for every pull request, plus shellcheck and a static Linux release build.
+
+### Releasing
+Bump `version` in `Cargo.toml`, then tag:
+```sh
+git tag v0.3.0 && git push origin v0.3.0
+```
+The release workflow builds binaries for macOS (arm64, x86_64) and Linux
+(x86_64, arm64; static musl), uploads them with SHA-256 checksums, and publishes
+the release. `install.sh` picks them up from then on.
 
 ## Roadmap
 - [x] Made Working MVP
@@ -234,3 +296,6 @@ CI runs all of this on Linux and macOS for every pull request.
 - [x] Auto Scanning for predefined folder
 - [x] Removing not only entries but whole directories (This one will be on config entry turnable)
 - [x] Creating and manipulating packages
+- [x] Dev environments: separate containers for groups of projects
+- [x] One-line install script
+- [ ] Dev environments on another machine (over SSH)
