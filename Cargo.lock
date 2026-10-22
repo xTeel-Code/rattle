@@ -1148,7 +1148,7 @@ dependencies = [
 
 [[package]]
 name = "rattle"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "ratatui",
  "serde_json",
