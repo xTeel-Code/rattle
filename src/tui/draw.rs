@@ -1,6 +1,7 @@
 //! Rendering: the project list, footer and every popup.
 
 use super::deps_view::draw_deps;
+use super::envs_view::status_span;
 use super::*;
 
 impl App {
@@ -59,6 +60,7 @@ impl App {
                 );
             }
             Mode::Deps(view) => draw_deps(f, view, self.job.as_ref().map(|j| j.status_line())),
+            Mode::Envs(view) => self.draw_envs(f, view),
             Mode::Settings(form) => {
                 let area = popup(f.area(), 85, form.height());
                 f.render_widget(Clear, area);
@@ -195,15 +197,32 @@ impl App {
             .map(|&i| self.store.projects[i].name.chars().count())
             .max()
             .unwrap_or(0);
+        let env_width = self
+            .visible
+            .iter()
+            .filter_map(|&i| self.project_envs.get(&self.store.projects[i].name))
+            .map(|e| e.chars().count())
+            .max()
+            .unwrap_or(0);
         let items: Vec<ListItem> = self
             .visible
             .iter()
             .map(|&i| {
                 let p = &self.store.projects[i];
-                let mut spans = vec![
-                    Span::raw(format!("{:<width$}  ", p.name)).bold(),
-                    Span::raw(p.path.clone()).dark_gray(),
-                ];
+                let mut spans = vec![Span::raw(format!("{:<width$}  ", p.name)).bold()];
+                // [work ●]: the project's environment and whether it runs.
+                if env_width > 0 {
+                    match self.project_envs.get(&p.name) {
+                        Some(env) => {
+                            let pad = env_width - env.chars().count();
+                            spans.push(Span::raw(format!("[{env} ")).cyan());
+                            spans.push(status_span(self.env_status.get(env), false));
+                            spans.push(Span::raw(format!("]{:pad$}  ", "")).cyan());
+                        }
+                        None => spans.push(Span::raw(format!("{:w$}  ", "", w = env_width + 4))),
+                    }
+                }
+                spans.push(Span::raw(p.path.clone()).dark_gray());
                 if !Path::new(&p.path).is_dir() {
                     spans.push(Span::raw("  missing").red());
                 }
@@ -281,6 +300,7 @@ const FOOTER_HINTS: &[(&str, u8)] = &[
     ("a add", 3),
     ("n new", 3),
     ("p deps", 3),
+    ("v envs", 2),
     ("s scan", 2),
     ("e edit", 2),
     (", settings", 3),
