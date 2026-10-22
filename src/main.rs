@@ -19,7 +19,7 @@ Rattle - Project Manager Written In Rust
 Usage: rattle [command] [projectName | filePath]
 (no command)\t- opens the interactive TUI
 tui\t- opens the interactive TUI
-help\t- shows this message
+help\t- shows this message (rattle --version prints the version)
 show\t- will show your projects
 create\t- will register a project in folder of your choosing (req. filePath)
 delete\t- will delete project of your choosing (req. projectName)
@@ -62,6 +62,10 @@ fn main() -> ExitCode {
         Some("tui") => tui::run(&file),
         // The TUI draws on stderr, so stdout may be captured by `$(rattle)`.
         None if io::stdin().is_terminal() && io::stderr().is_terminal() => tui::run(&file),
+        Some("version") | Some("-V") | Some("--version") => {
+            println!("rattle {}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
         Some("help") | Some("-h") | Some("--help") | None => {
             println!("{HELP}");
             Ok(())
