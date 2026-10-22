@@ -411,7 +411,9 @@ fn help_scrolls_and_footer_fits_in_a_small_terminal() {
     let Some(tui) = Tui::start_sized(&sb, "small", &[], (50, 12)) else {
         return;
     };
-    let screen = tui.wait_for("No projects yet");
+    tui.wait_for("No projects yet");
+    // Wait for the footer itself: a capture can land on a half-painted frame.
+    let screen = tui.wait_for("q quit");
     let footer = screen.lines().last().unwrap_or_default();
     assert!(
         footer.contains("? keys") && footer.contains("q quit") && !footer.contains(", settings"),
