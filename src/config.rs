@@ -260,7 +260,7 @@ impl Config {
                     }
                 },
             };
-            if value.starts_with('[') && !value.ends_with(']') {
+            if value.starts_with('[') && bracket_balance(&value) > 0 {
                 pending = Some((key, value));
                 continue;
             }
@@ -530,17 +530,70 @@ fn is_table_header(line: &str) -> bool {
 }
 
 /// `[` minus `]` outside of strings.
-fn bracket_balance(s: &str) -> i32 {
-    let mut in_str = false;
-    s.chars().fold(0, |n, c| match c {
-        '"' => {
-            in_str = !in_str;
-            n
+pub(crate) fn bracket_balance(s: &str) -> i32 {
+    let mut n = 0;
+    outside_strings(s, |_, c| {
+        match c {
+            '[' => n += 1,
+            ']' => n -= 1,
+            _ => {}
         }
-        '[' if !in_str => n + 1,
-        ']' if !in_str => n - 1,
-        _ => n,
-    })
+        true
+    });
+    n
+}
+
+/// Calls `f(index, char)` for every character of `s` that is outside TOML
+/// strings ("…" with `\` escapes, or '…'); `f` returns false to stop. The one
+/// place that knows TOML quoting, for comments, brackets and lists alike.
+fn outside_strings(s: &str, mut f: impl FnMut(usize, char) -> bool) {
+    let (mut quote, mut escaped) = (None::<char>, false);
+    for (i, c) in s.char_indices() {
+        match quote {
+            Some(_) if escaped => escaped = false,
+            Some('"') if c == '\\' => escaped = true,
+            Some(q) if c == q => quote = None,
+            Some(_) => {}
+            None if c == '"' || c == '\'' => quote = Some(c),
+            None => {
+                if !f(i, c) {
+                    return;
+                }
+            }
+        }
+    }
+}
+
+/// The strings of a TOML array (comments already removed), e.g.
+/// `["a, b", "c\"d"]` → `a, b` and `c"d`. Strings inside inline tables
+/// (`{ include-group = "dev" }`) are skipped.
+pub(crate) fn string_array(text: &str) -> Vec<String> {
+    let (mut items, mut current) = (Vec::new(), String::new());
+    let (mut quote, mut escaped, mut braces) = (None::<char>, false, 0i32);
+    for c in text.chars() {
+        match quote {
+            Some(_) if escaped => {
+                current.push(c);
+                escaped = false;
+            }
+            Some('"') if c == '\\' => escaped = true,
+            Some(q) if c == q => {
+                if braces == 0 {
+                    items.push(std::mem::take(&mut current));
+                }
+                current.clear();
+                quote = None;
+            }
+            Some(_) => current.push(c),
+            None => match c {
+                '"' | '\'' => quote = Some(c),
+                '{' => braces += 1,
+                '}' => braces -= 1,
+                _ => {}
+            },
+        }
+    }
+    items
 }
 
 /// A TOML string literal.
@@ -554,16 +607,14 @@ pub fn toml_list(items: &[String]) -> String {
     format!("[{}]", items.join(", "))
 }
 
+/// `["a", "b, c"]` → `a`, `b, c` (a lone string → itself), empty ones dropped.
 fn parse_list(value: &str) -> Vec<String> {
-    let inner = value
-        .strip_prefix('[')
-        .and_then(|v| v.strip_suffix(']'))
-        .unwrap_or(value);
-    inner
-        .split(',')
-        .map(|item| unquote(item.trim()))
-        .filter(|item| !item.is_empty())
-        .collect()
+    let items = if value.trim_start().starts_with('[') {
+        string_array(value)
+    } else {
+        vec![unquote(value.trim())]
+    };
+    items.into_iter().filter(|item| !item.is_empty()).collect()
 }
 
 /// Relative scan dirs mean "under home", not "under wherever rattle was started".
@@ -577,15 +628,14 @@ fn home_relative(dir: String) -> String {
 
 /// Drops a trailing `# comment`, ignoring `#` inside quoted strings.
 pub(crate) fn strip_comment(line: &str) -> &str {
-    let mut in_str = false;
-    for (i, c) in line.char_indices() {
-        match c {
-            '"' => in_str = !in_str,
-            '#' if !in_str => return &line[..i],
-            _ => {}
+    let mut end = line.len();
+    outside_strings(line, |i, c| {
+        if c == '#' {
+            end = i;
         }
-    }
-    line
+        c != '#'
+    });
+    &line[..end]
 }
 
 #[cfg(test)]
@@ -780,6 +830,19 @@ mod tests {
             "scan_dirs = [\"code\"]\n"
         );
         assert!(remove_table(&removed, "envs.ghost").is_none());
+    }
+
+    #[test]
+    fn lists_keep_commas_escaped_quotes_and_brackets_inside_strings() {
+        let c = Config::parse(
+            "scan_dirs = [\"~/My, Stuff\", \"~/a \\\"b\\\" # c\"]  # real comment\n\
+             ignore = [\n  \"x]y\",   # a ] in a string\n  \"z\",\n]\n\
+             editor = \"code \\\"--wait\\\" # not a comment\"\n",
+        );
+        assert_eq!(c.scan_dirs, vec!["~/My, Stuff", "~/a \"b\" # c"]);
+        assert_eq!(c.ignore, vec!["x]y", "z"]);
+        assert_eq!(c.editor.as_deref(), Some("code \"--wait\" # not a comment"));
+        assert_eq!(strip_comment("a = \"x\\\"#y\" # gone"), "a = \"x\\\"#y\" ");
     }
 
     #[test]

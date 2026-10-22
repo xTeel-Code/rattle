@@ -4,7 +4,7 @@
 use std::path::Path;
 use std::process::{Command, Output};
 
-use crate::config::strip_comment;
+use crate::config::{bracket_balance, string_array, strip_comment};
 use crate::store::unquote;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -398,39 +398,16 @@ fn parse_pyproject(text: &str) -> Vec<Dep> {
     deps
 }
 
-/// Collects the quoted strings of a TOML array that starts in `first` and may
-/// continue on the following lines (advancing `i` past them). Strings inside
-/// inline tables (`{ include-group = "dev" }`) are skipped.
+/// Collects the strings of a TOML array that starts in `first` and may
+/// continue on the following lines (advancing `i` past them).
 fn take_string_array(first: &str, lines: &[&str], i: &mut usize) -> Vec<String> {
-    let mut items = Vec::new();
-    let (mut depth, mut braces, mut quote, mut current) = (0i32, 0i32, None::<char>, String::new());
-    let mut text = first.to_string();
-    loop {
-        for c in text.chars() {
-            match (quote, c) {
-                (Some(q), c) if c == q => {
-                    if braces == 0 {
-                        items.push(std::mem::take(&mut current));
-                    }
-                    current.clear();
-                    quote = None;
-                }
-                (Some(_), c) => current.push(c),
-                (None, '"' | '\'') => quote = Some(c),
-                (None, '[') => depth += 1,
-                (None, ']') => depth -= 1,
-                (None, '{') => braces += 1,
-                (None, '}') => braces -= 1,
-                (None, '#') => break, // comment outside a string
-                _ => {}
-            }
-        }
-        if depth <= 0 || *i >= lines.len() {
-            return items;
-        }
-        text = lines[*i].to_string();
+    let mut text = strip_comment(first).to_string();
+    while bracket_balance(&text) > 0 && *i < lines.len() {
+        text.push('\n');
+        text.push_str(strip_comment(lines[*i]));
         *i += 1;
     }
+    string_array(&text)
 }
 
 /// `requests[socks]>=2.31; python_version < "3.13"` → (`requests`, `[socks]>=2.31; …`).
