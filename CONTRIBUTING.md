@@ -60,6 +60,14 @@ slow machines; keep it that way when adding one.
 ## Releasing
 For maintainers. Releases are built and published by GitHub Actions from a tag.
 
+Two things are pinned to exact commits on purpose, and are bumped only after
+reading what changed:
+- The actions in `.github/workflows/` (the tag stays in a comment). The release
+  workflow can publish binaries everyone installs, so a moved tag upstream must
+  not change what runs. `dtolnay/rust-toolchain` then needs `toolchain: stable`.
+- The built-in bindle template (`BINDLE_RAW` in `src/envs.rs`), which starts a
+  privileged container.
+
 1. Bump `version` in `Cargo.toml` and run `cargo build`, which updates
    `Cargo.lock`. Release builds use `--locked`, so a stale lockfile fails them.
    Merge that to `main` through a PR.
