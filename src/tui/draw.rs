@@ -283,9 +283,20 @@ impl App {
         f.render_stateful_widget(list, area, &mut self.list);
     }
 
+    /// The running job's spinner line, plus a message shown meanwhile (e.g.
+    /// "can't be stopped halfway").
+    pub(super) fn job_line(&self, job: &Job) -> Line<'static> {
+        let mut spans = vec![Span::raw(format!(" {}", job.status_line())).yellow()];
+        if let Some((msg, error)) = &self.status {
+            let msg = Span::raw(format!("  ·  {msg}"));
+            spans.push(if *error { msg.red() } else { msg.dark_gray() });
+        }
+        Line::from(spans)
+    }
+
     fn draw_footer(&self, f: &mut Frame, area: Rect) {
         let line = if let Some(job) = &self.job {
-            Line::from(format!(" {}", job.status_line()).yellow())
+            self.job_line(job)
         } else if matches!(self.mode, Mode::Filter) {
             Line::from(vec![
                 " / ".bold().reversed(),

@@ -37,7 +37,7 @@ mod job;
 
 use deps_view::{DepsAction, DepsView};
 use envs_view::EnvsView;
-use job::{Job, JobKind};
+use job::{Done, Job, JobKind};
 
 type Term = Terminal<CrosstermBackend<Stderr>>;
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -138,6 +138,10 @@ struct App {
     tab: Tab,
     /// The Environments tab's state (kept while switching tabs).
     envs_view: EnvsView,
+    /// config.toml, read once and on changes (see [`App::reload_config_cache`]).
+    config: Config,
+    /// Statuses were asked for while a refresh was still running.
+    env_refresh_again: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -164,6 +168,8 @@ pub fn run(file: &Path) -> Result<()> {
         env_status_rx: None,
         tab: Tab::Projects,
         envs_view: EnvsView::new(),
+        config: Config::load(&config::path_for(file))?,
+        env_refresh_again: false,
     };
     app.refilter();
 
@@ -267,6 +273,26 @@ impl App {
         self.status = Some((msg.into(), error));
     }
 
+    /// Re-reads config.toml into the cache. Everything in the TUI uses the
+    /// cache; this runs at start and whenever the config may have changed
+    /// (`c`, `,`, `s`, deleting, environment edits). On error the old one stays.
+    pub(super) fn reload_config_cache(&mut self) -> io::Result<()> {
+        self.config = Config::load(&config::path_for(&self.file))?;
+        Ok(())
+    }
+
+    /// [`App::reload_config_cache`], reporting a failure in the status line.
+    /// Returns whether the config could be read.
+    pub(super) fn refresh_config(&mut self) -> bool {
+        match self.reload_config_cache() {
+            Ok(()) => true,
+            Err(e) => {
+                self.set_status(format!("cannot read config: {e}"), true);
+                false
+            }
+        }
+    }
+
     /// Changes the registry through [`Store::update`], which re-reads it under
     /// a lock, so changes another rattle made meanwhile are kept, then shows
     /// the result. `None` (with an error in the status line) if saving failed.
@@ -289,10 +315,23 @@ impl App {
             key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c');
         if let Some(job) = &mut self.job {
             // Only cancelling (or quitting) while something runs in the background.
-            if ctrl_c || key.code == KeyCode::Esc {
+            if !job.can_cancel() {
+                if ctrl_c || key.code == KeyCode::Esc {
+                    let label = job.label.clone();
+                    self.set_status(
+                        format!("{label} can't be stopped halfway; it finishes shortly"),
+                        false,
+                    );
+                }
+                return Ok(());
+            }
+            if ctrl_c {
+                // Leave nothing running behind.
+                job.force();
+                self.quit = true;
+            } else if key.code == KeyCode::Esc {
                 job.cancel();
             }
-            self.quit = ctrl_c;
             return Ok(());
         }
         if ctrl_c {
@@ -378,9 +417,7 @@ impl App {
                         return Ok(());
                     }
                     let parent = parent.clone();
-                    let templates = Config::load(&config::path_for(&self.file))
-                        .map(|c| templates::all(&c))
-                        .unwrap_or_default();
+                    let templates = templates::all(&self.config);
                     let mut list = ListState::default();
                     list.select(Some(0));
                     self.mode = Mode::NewTemplate {
@@ -476,10 +513,12 @@ impl App {
                 }
             }
             KeyCode::Char('c') => self.edit_config(term)?,
-            KeyCode::Char(',') => match Config::load(&config::path_for(&self.file)) {
-                Ok(config) => self.mode = Mode::Settings(Box::new(SettingsForm::new(&config))),
-                Err(e) => self.set_status(format!("cannot read config: {e}"), true),
-            },
+            KeyCode::Char(',') => {
+                // The form shows the file as it is now, edits elsewhere included.
+                if self.refresh_config() {
+                    self.mode = Mode::Settings(Box::new(SettingsForm::new(&self.config)));
+                }
+            }
             KeyCode::Char('D') => self.start_delete_files(),
             KeyCode::Char('v') | KeyCode::Tab | KeyCode::BackTab => {
                 self.refresh_envs();
@@ -496,9 +535,7 @@ impl App {
                 }
             }
             KeyCode::Char('n') => {
-                let parent = Config::load(&config::path_for(&self.file))
-                    .map_err(|e| e.to_string())
-                    .and_then(|c| templates::parent_dir(&c, None));
+                let parent = templates::parent_dir(&self.config, None);
                 match parent {
                     Ok(parent) => {
                         self.mode = Mode::NewName {
@@ -590,10 +627,14 @@ impl App {
 
     /// Checks the background job; handles its result once it has finished.
     fn tick_job(&mut self) {
-        let Some(output) = self.job.as_mut().and_then(Job::poll) else {
+        let Some(done) = self.job.as_mut().and_then(Job::poll) else {
             return;
         };
         let job = self.job.take().expect("polled job exists");
+        let output = match done {
+            Done::Output(output) => output,
+            Done::Task(result) => return self.finish_task(job, result),
+        };
         if matches!(
             job.kind,
             JobKind::Env { .. } | JobKind::EnvLogs { .. } | JobKind::EnvRemove { .. }
@@ -601,7 +642,11 @@ impl App {
             return self.finish_env_job(&job, &output);
         }
         match job.kind {
-            JobKind::Env { .. } | JobKind::EnvLogs { .. } | JobKind::EnvRemove { .. } => {}
+            JobKind::Env { .. }
+            | JobKind::EnvLogs { .. }
+            | JobKind::EnvRemove { .. }
+            | JobKind::DeleteFolder { .. }
+            | JobKind::EnvCreate { .. } => {}
             JobKind::NewProject {
                 name,
                 template,
@@ -652,11 +697,11 @@ impl App {
     /// `D`: checks that the selected folder may be deleted, then asks to confirm.
     fn start_delete_files(&mut self) {
         let Some(i) = self.selected() else { return };
-        let config_file = config::path_for(&self.file);
-        let config = match Config::load(&config_file) {
-            Ok(c) => c,
-            Err(e) => return self.set_status(format!("cannot read config: {e}"), true),
-        };
+        // Deleting must follow the config as it is now, not as it was.
+        if !self.refresh_config() {
+            return;
+        }
+        let config = self.config.clone();
         if config.delete_files == DeleteFiles::Off {
             return self.set_status(
                 "deleting folders is off; set delete_files = \"trash\" in config (c)",
@@ -675,30 +720,51 @@ impl App {
         }
     }
 
+    /// Deletes the folder in the background (a big one takes a while), then
+    /// the entry (see [`App::finish_task`]).
     fn delete_files(&mut self, path: &Path, how: DeleteFiles) {
         let Some(i) = self.selected() else { return };
         let name = self.store.projects[i].name.clone();
-        if let Err(e) = ops::delete_folder(path, how) {
+        let verb = if how == DeleteFiles::Trash {
+            "moving to the Trash"
+        } else {
+            "deleting"
+        };
+        let path = path.to_path_buf();
+        self.status = None;
+        self.job = Some(Job::spawn_task(
+            format!("{verb} '{name}'"),
+            JobKind::DeleteFolder { name, how },
+            move || ops::delete_folder(&path, how),
+        ));
+    }
+
+    /// Handles a finished task: a folder deletion or an environment creation.
+    fn finish_task(&mut self, job: Job, result: std::result::Result<(), String>) {
+        if let Err(e) = result {
             return self.set_status(e, true);
         }
-        if self.update_store(|s| s.remove(&name)).is_none() {
-            return;
+        match job.kind {
+            JobKind::DeleteFolder { name, how } => {
+                if self.update_store(|s| s.remove(&name)).is_none() {
+                    return;
+                }
+                let what = if how == DeleteFiles::Trash {
+                    "moved to the Trash"
+                } else {
+                    "deleted"
+                };
+                self.set_status(format!("removed '{name}'; folder {what}"), false);
+            }
+            JobKind::EnvCreate { env, in_config } => self.finish_create_env(&env, in_config),
+            _ => {}
         }
-        let what = if how == DeleteFiles::Trash {
-            "moved to the Trash"
-        } else {
-            "deleted"
-        };
-        self.set_status(format!("removed '{name}'; folder {what}"), false);
     }
 
     /// Runs a scan before the first key press when `auto_scan` is on and
     /// scan_dirs are set; stays quiet unless something was found or went wrong.
     fn auto_scan(&mut self, term: &mut Term) -> Result<()> {
-        let config_file = config::path_for(&self.file);
-        let Ok(config) = Config::load(&config_file) else {
-            return Ok(());
-        };
+        let config = self.config.clone();
         if !config.auto_scan || config.scan_dirs.is_empty() {
             return Ok(());
         }
@@ -710,12 +776,13 @@ impl App {
     }
 
     fn scan(&mut self) {
-        let config_file = config::path_for(&self.file);
-        let config = match Config::load(&config_file) {
-            Ok(c) => c,
-            Err(e) => return self.set_status(format!("cannot read config: {e}"), true),
-        };
+        // `s` picks up config changes made elsewhere (e.g. new scan_dirs).
+        if !self.refresh_config() {
+            return;
+        }
+        let config = self.config.clone();
         if config.scan_dirs.is_empty() {
+            let config_file = config::path_for(&self.file);
             let msg = format!("no scan_dirs set; add them in {}", config_file.display());
             return self.set_status(msg, true);
         }
@@ -779,10 +846,8 @@ impl App {
         wait: bool,
         term: &mut Term,
     ) -> Result<bool> {
-        // Read on every use so a changed `editor` setting applies without a restart.
-        let configured = Config::load(&config::path_for(&self.file))
-            .ok()
-            .and_then(|c| c.editor);
+        // From the cache, which is reloaded whenever the config is edited here.
+        let configured = self.config.editor.clone();
         let (mut cmd, editor) = ops::editor_command(configured.as_deref(), dir, target, wait);
         match self.run_suspended(&mut cmd, term)? {
             Ok(_) => Ok(true),
@@ -824,10 +889,10 @@ impl App {
     /// Rereads config.toml after it changed and rescans when auto_scan is on,
     /// so e.g. new scan_dirs show up immediately. `done` starts the status line.
     fn reload_config(&mut self, done: &str) {
-        let config = match Config::load(&config::path_for(&self.file)) {
-            Ok(c) => c,
-            Err(e) => return self.set_status(format!("cannot read config: {e}"), true),
-        };
+        if let Err(e) = self.reload_config_cache() {
+            return self.set_status(format!("cannot read config: {e}"), true);
+        }
+        let config = self.config.clone();
         self.refresh_envs();
         if config.scan_dirs.is_empty() {
             self.set_status(

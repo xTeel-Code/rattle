@@ -251,6 +251,65 @@ fn slow_template_runs_in_background_and_esc_cancels_it() {
     assert!(sb.registered().is_empty());
 }
 
+/// Starts a template that ignores SIGTERM (its `sleep` inherits that) and
+/// leaves a marker if its child survives; returns the TUI, waiting at "Esc cancels".
+fn start_stuck_template(sb: &Sandbox, name: &str) -> Option<(Tui, std::path::PathBuf)> {
+    let marker = sb.home.join("child-survived");
+    sb.write_config(&format!(
+        "scan_dirs = [\"code\"]\n[templates]\nempty = \"trap '' TERM; (sleep 6; touch '{}') & sleep 30; mkdir {{name}}\"\n",
+        marker.display()
+    ));
+    let tui = Tui::start(sb, name, &[])?;
+    tui.wait_for("No projects yet");
+    tui.keys(&["n"]);
+    tui.type_text("stuck");
+    tui.keys(&["Enter"]);
+    tui.wait_for("Template for 'stuck'");
+    tui.keys(&["Enter"]);
+    tui.wait_for("Esc cancels");
+    Some((tui, marker))
+}
+
+/// Regression test: a command ignoring SIGTERM used to leave the TUI stuck
+/// on "cancelling…"; now it is killed after a few seconds.
+#[test]
+fn esc_kills_a_command_that_ignores_the_stop_signal() {
+    let sb = Sandbox::new("tui-stuck");
+    let Some((tui, marker)) = start_stuck_template(&sb, "stuck") else {
+        return;
+    };
+    let started = std::time::Instant::now();
+    tui.keys(&["Escape"]);
+    tui.wait_for("Esc again to force");
+    tui.wait_for("cancelled creating 'stuck'");
+    let took = started.elapsed();
+    assert!(took < Duration::from_secs(8), "took {took:?}");
+    assert!(
+        took > Duration::from_secs(2),
+        "SIGTERM first, then a grace period: {took:?}"
+    );
+    std::thread::sleep(Duration::from_secs(7));
+    assert!(!marker.exists(), "the template's child kept running");
+}
+
+#[test]
+fn second_esc_forces_at_once() {
+    let sb = Sandbox::new("tui-stuck-force");
+    let Some((tui, _)) = start_stuck_template(&sb, "stuck-force") else {
+        return;
+    };
+    let started = std::time::Instant::now();
+    tui.keys(&["Escape"]);
+    tui.wait_for("Esc again to force");
+    tui.keys(&["Escape"]);
+    tui.wait_for("cancelled creating 'stuck'");
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
 /// Regression test: a process left behind by a template (here one that also
 /// ignores SIGTERM) keeps the output pipes open; the TUI must not freeze.
 #[test]

@@ -91,8 +91,11 @@ right (status, folders, mounting, member projects, links, files).
 | `D` | remove it, after typing its name: container and files go, volumes stay |
 | `Esc` | back to Projects |
 
-Templates (`n`) and package managers (`p`) run in the background with a
-spinner; `Esc` cancels them, including anything they started.
+Slow work runs in the background with a spinner, so the TUI never freezes.
+Templates (`n`), package managers (`p`) and Docker actions can be cancelled with
+`Esc`, including anything they started; a command that won't stop is killed
+after 3 seconds, or at once on a second `Esc`. Deleting a folder and creating an
+environment finish on their own, since stopping them halfway would leave a mess.
 
 The TUI draws on stderr, so you can jump straight into a project:
 ```sh
