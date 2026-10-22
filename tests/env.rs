@@ -427,9 +427,8 @@ fn tui_envs_tab_changes_folders_and_mounting() {
     // Tab and Esc go back to Projects; the tags follow the new folders.
     tui.keys(&["Escape"]);
     tui.wait_for("Projects (4)");
-    let screen = tui.wait_for("game");
-    let game = screen.lines().find(|l| l.contains("game")).unwrap();
-    assert!(game.contains("[work"), "game now belongs to work: {game}");
+    // game now belongs to work.
+    tui.wait_for_row(" game ", |row| row.contains("[work"));
 }
 
 #[test]
@@ -471,22 +470,9 @@ fn tui_envs_tab_removes_an_environment_after_typing_its_name() {
         "{config}"
     );
 
-    // Back in Projects, work's projects no longer have a tag. Poll: a capture
-    // can land on a half-painted frame still showing the old row.
+    // Back in Projects, work's projects no longer have a tag.
     tui.keys(&["Tab"]);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    loop {
-        let screen = tui.screen();
-        let api = screen.lines().find(|l| l.contains(" api "));
-        if api.is_some_and(|l| !l.contains("[work")) {
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "api still tagged:\n{screen}"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
+    tui.wait_for_row(" api ", |row| !row.contains("[work"));
 }
 
 #[test]

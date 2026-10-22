@@ -246,6 +246,25 @@ impl Tui {
         String::from_utf8_lossy(&self.tmux(&["capture-pane", "-p"]).stdout).into_owned()
     }
 
+    /// Waits until the screen's line containing `row` satisfies `ok`; panics
+    /// with the screen after 10s. For checks within a row, which a capture
+    /// can catch half painted.
+    #[track_caller]
+    pub fn wait_for_row(&self, row: &str, ok: impl Fn(&str) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let screen = self.screen();
+            if screen.lines().find(|l| l.contains(row)).is_some_and(&ok) {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "row {row:?} never matched; screen:\n{screen}"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
     /// Waits until `needle` is on screen; panics with the screen after 10s.
     #[track_caller]
     pub fn wait_for(&self, needle: &str) -> String {
