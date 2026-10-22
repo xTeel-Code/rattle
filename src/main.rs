@@ -15,33 +15,54 @@ use config::{Config, DeleteFiles};
 use store::Store;
 
 const HELP: &str = "\
-Rattle - Project Manager Written In Rust
-Usage: rattle [command] [projectName | filePath]
-(no command)\t- opens the interactive TUI
-tui\t- opens the interactive TUI
-help\t- shows this message (rattle --version prints the version)
-show\t- will show your projects
-create\t- will register a project in folder of your choosing (req. filePath)
-delete\t- will delete project of your choosing (req. projectName)
-\t  rattle delete <name> --files also deletes the folder (needs delete_files in config)
-scan\t- will register every project found in your scan folders
-\t  rattle scan [-n | --dry-run] [-d | --depth N] [folder...]
-\t  (folders default to scan_dirs, depth to max_depth in ~/.rattle/config.toml)
-prune\t- removes entries whose folder no longer exists (rattle prune [-n | --dry-run])
-new\t- creates a project from a template and adds it
-\t  rattle new <name> [-t | --template T] [--in folder]   (rattle new --list shows templates)
-deps\t- lists, adds or removes a project's dependencies with its package manager
-\t  rattle deps [project] [list | add [--dev] <pkg>... | remove <pkg>...]
-\t  (project defaults to the current folder; cargo, npm/pnpm/yarn/bun, uv/poetry, go)
-env\t- dev environments: one container per group of projects (e.g. work, personal)
-\t  rattle env [list | create <name> [--dir folder] | up | stop | restart | logs |
-\t             shell | open | config | path <name>]
-config\t- opens config.toml in $VISUAL / $EDITOR (`rattle config path` prints its path)
+Rattle: all your projects in one place, without hunting for folders.
 
-In the TUI, Enter prints the selected path on exit, so `cd \"$(rattle)\"` works.
-Arguments that are omitted are asked for interactively.
-Registry: ~/.rattle/projects.toml (override with RATTLE_FILE)
-Config:   config.toml next to the registry";
+Usage: rattle [command] [options]
+
+Without a command, rattle opens the TUI; press ? there for its keys. Enter in
+the TUI prints the chosen project's path, so `cd \"$(rattle)\"` jumps into it.
+
+Projects
+  show                       list projects                  (aliases: list, ls)
+  create [path]              register a folder, e.g. `create .`   (alias: add)
+  delete <name | number>     remove an entry; files stay  (aliases: remove, rm)
+    --files                  also delete the folder (see delete_files in config)
+  scan [folder...]           register projects in folders (default: scan_dirs)
+    -n, --dry-run            only show what would be added
+    -d, --depth N            search N levels deep (default: max_depth)
+  prune [-n | --dry-run]     remove entries whose folder no longer exists
+
+New projects and dependencies
+  new <name>                 create a project from a template and register it
+    -t, --template T         the template (default: asks, or empty)
+    --in <folder>            where (default: new_project_dir, or 1st scan dir)
+    --list                   show the templates
+  deps [project] [list]      list dependencies; project is a name, number or
+                             folder (default: the current folder)
+  deps [project] add [--dev] <package>...   add, with the project's own tool
+  deps [project] remove <package>...        remove
+
+Dev environments (one container per group of projects; alias: envs)
+  env [list]                 list environments and whether they run
+  env create <name>          create one; adds [envs.<name>] to the config
+    --dir <folder>           whose projects belong to it (repeatable)
+    -t, --template T         its env template (default: bindle)
+  env up | stop | restart <name>   start (mounting its projects), stop, restart
+  env logs <name> [-f]       show its logs (-f follows them)
+  env shell <name> [project] a shell in its container, in the project's folder
+  env open <name> [link] [--project P]   open a link (default: the editor)
+  env config <name>          edit its settings (.env)
+  env path <name>            print the folder with its files
+
+Settings and info
+  config                     edit config.toml in your editor
+  config path                print where config.toml is
+  tui                        open the TUI
+  help                       show this help (also -h, --help)
+  version                    print the version (also -V, --version)
+
+create, delete and new ask for a missing argument. Projects are stored in
+~/.rattle/projects.toml (or $RATTLE_FILE), the config in config.toml next to it.";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
