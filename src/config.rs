@@ -352,6 +352,12 @@ impl Config {
     }
 }
 
+/// The temp file a config write goes through before its rename: per process,
+/// so two rattles saving at once never share a half-written file.
+fn tmp_path(file: &Path) -> PathBuf {
+    file.with_extension(format!("toml.{}.tmp", std::process::id()))
+}
+
 /// Adds an `[envs.<name>]` section at the end of the config file.
 pub fn append_env(file: &Path, env: &EnvDef) -> io::Result<()> {
     let mut text = fs::read_to_string(file).unwrap_or_default();
@@ -364,7 +370,7 @@ pub fn append_env(file: &Path, env: &EnvDef) -> io::Result<()> {
         toml_string(&env.template),
         toml_list(&env.dirs)
     ));
-    let tmp = file.with_extension("toml.tmp");
+    let tmp = tmp_path(file);
     fs::write(&tmp, text)?;
     fs::rename(tmp, file)
 }
@@ -373,7 +379,7 @@ pub fn append_env(file: &Path, env: &EnvDef) -> io::Result<()> {
 /// keeping comments and every other line as they are.
 pub fn save_values(file: &Path, updates: &[(&str, String)]) -> io::Result<()> {
     let text = fs::read_to_string(file).unwrap_or_default();
-    let tmp = file.with_extension("toml.tmp");
+    let tmp = tmp_path(file);
     fs::write(&tmp, set_values(&text, updates))?;
     fs::rename(tmp, file)
 }
@@ -493,7 +499,7 @@ pub fn save_table_value(file: &Path, table: &str, key: &str, value: &str) -> io:
     let new = set_table_value(&text, table, key, value).ok_or_else(|| {
         io::Error::new(io::ErrorKind::NotFound, format!("no [{table}] in config"))
     })?;
-    let tmp = file.with_extension("toml.tmp");
+    let tmp = tmp_path(file);
     fs::write(&tmp, new)?;
     fs::rename(tmp, file)
 }
@@ -504,7 +510,7 @@ pub fn delete_table(file: &Path, table: &str) -> io::Result<bool> {
     let Some(new) = remove_table(&text, table) else {
         return Ok(false);
     };
-    let tmp = file.with_extension("toml.tmp");
+    let tmp = tmp_path(file);
     fs::write(&tmp, new)?;
     fs::rename(tmp, file)?;
     Ok(true)
