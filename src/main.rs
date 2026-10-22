@@ -1,5 +1,6 @@
 mod config;
 mod deps;
+mod envs;
 mod ops;
 mod settings;
 mod store;
@@ -32,6 +33,9 @@ new\t- creates a project from a template and adds it
 deps\t- lists, adds or removes a project's dependencies with its package manager
 \t  rattle deps [project] [list | add [--dev] <pkg>... | remove <pkg>...]
 \t  (project defaults to the current folder; cargo, npm/pnpm/yarn/bun, uv/poetry, go)
+env\t- dev environments: one container per group of projects (e.g. work, personal)
+\t  rattle env [list | create <name> [--dir folder] | up | stop | restart | logs |
+\t             shell | open | config | path <name>]
 config\t- opens config.toml in $VISUAL / $EDITOR (`rattle config path` prints its path)
 
 In the TUI, Enter prints the selected path on exit, so `cd \"$(rattle)\"` works.
@@ -53,6 +57,7 @@ fn main() -> ExitCode {
         Some("prune") => prune(&file, &args[1..]),
         Some("new") => new_project(&file, &args[1..]),
         Some("deps") => deps_command(&file, &args[1..]),
+        Some("env") | Some("envs") => env_command(&file, &args[1..]),
         Some("config") => edit_config(&file, args.get(1).map(String::as_str)),
         Some("tui") => tui::run(&file),
         // The TUI draws on stderr, so stdout may be captured by `$(rattle)`.
@@ -447,6 +452,277 @@ fn deps_command(file: &Path, args: &[String]) -> Result<()> {
 }
 
 /// Runs a package-manager command with its output shown, for the CLI.
+const ENV_USAGE: &str = "\
+usage: rattle env [list]
+       rattle env create <name> [-t | --template T] [--dir folder]...
+       rattle env up | stop | restart <name>
+       rattle env logs <name> [-f]
+       rattle env shell <name> [project]
+       rattle env open <name> [link] [--project P]
+       rattle env config | path <name>";
+
+/// `rattle env …`: dev environments, one container per group of projects.
+fn env_command(file: &Path, args: &[String]) -> Result<()> {
+    let config_file = config::path_for(file);
+    let config = Config::load(&config_file)?;
+    let store = Store::load(file)?;
+    let action = args.first().map(String::as_str).unwrap_or("list");
+    let rest = args.get(1..).unwrap_or_default();
+    let name = || -> Result<String> {
+        rest.iter()
+            .find(|a| !a.starts_with('-'))
+            .cloned()
+            .ok_or_else(|| format!("{action} needs an environment name\n{ENV_USAGE}").into())
+    };
+
+    match action {
+        "list" | "ls" => env_list(file, &config, &store),
+        "create" => env_create(file, &config_file, &config, rest),
+        "up" | "start" => {
+            let env = envs::find_env(&config, &name()?)?;
+            let up = envs::prepare_up(&config, file, env, &store)?;
+            if up.mounts_changed {
+                println!(
+                    "Mounts changed: the container will be recreated. Runtime installs not listed\n\
+                     in its .env (INSTALL_PACKAGES, …) will be gone; volumes are kept."
+                );
+            }
+            run_visible(up.command)?;
+            println!(
+                "'{}' is running with {} mounted folder(s).",
+                env.name, up.mounts
+            );
+            print_links(file, &config, env, &store, None)
+        }
+        "stop" | "restart" => {
+            let env = envs::find_env(&config, &name()?)?;
+            let dir = envs::env_dir(&config, file, &env.name);
+            if !envs::is_created(&dir) {
+                return Err(format!("environment '{}' isn't created yet", env.name).into());
+            }
+            run_visible(envs::compose(&config, &dir, &[action]))
+        }
+        "logs" => {
+            let env = envs::find_env(&config, &name()?)?;
+            let dir = envs::env_dir(&config, file, &env.name);
+            let mut args = vec!["logs", "--tail", "200"];
+            if rest.iter().any(|a| a == "-f" || a == "--follow") {
+                args.push("--follow");
+            }
+            run_visible(envs::compose(&config, &dir, &args))
+        }
+        "shell" => {
+            let env = envs::find_env(&config, &name()?)?;
+            let template = envs::find_template(&config, &env.template)?;
+            let dir = envs::env_dir(&config, file, &env.name);
+            let folder = match rest.iter().filter(|a| !a.starts_with('-')).nth(1) {
+                Some(p) => {
+                    let project = store
+                        .find(p)
+                        .ok_or_else(|| format!("no project named '{p}'"))?;
+                    envs::project_folder(env, &template, &store, project)
+                }
+                None => template.workdir.clone(),
+            };
+            run_visible(envs::shell_command(&config, &dir, &template, &folder))
+        }
+        "open" => {
+            // <name> [link] [--project P], where P is not a positional.
+            let (mut positional, mut project) = (Vec::new(), None);
+            let mut args = rest.iter();
+            while let Some(arg) = args.next() {
+                match arg.as_str() {
+                    "-p" | "--project" => {
+                        let p = args.next().ok_or("--project needs a project name")?;
+                        project = Some(
+                            store
+                                .find(p)
+                                .ok_or_else(|| format!("no project named '{p}'"))?,
+                        );
+                    }
+                    other if other.starts_with('-') => {
+                        return Err(format!("unknown env open option: {other}").into())
+                    }
+                    other => positional.push(other.to_string()),
+                }
+            }
+            let env_name = positional
+                .first()
+                .ok_or_else(|| format!("open needs an environment name\n{ENV_USAGE}"))?;
+            let env = envs::find_env(&config, env_name)?;
+            let link = positional.get(1).cloned();
+            let links = env_links(file, &config, env, &store, project)?;
+            let (label, url) = match &link {
+                Some(l) => links.iter().find(|(n, _)| n == l).ok_or_else(|| {
+                    let names: Vec<&str> = links.iter().map(|(n, _)| n.as_str()).collect();
+                    format!("no link '{l}' (available: {})", names.join(", "))
+                })?,
+                None => links
+                    .first()
+                    .ok_or("this environment's template has no links")?,
+            };
+            println!("Opening {label}: {url}");
+            run_visible(envs::open_url(&config, url))
+        }
+        "config" => {
+            let env = envs::find_env(&config, &name()?)?;
+            let dir = envs::env_dir(&config, file, &env.name);
+            let env_file = dir.join(".env");
+            if !env_file.exists() {
+                return Err(format!("environment '{}' isn't created yet", env.name).into());
+            }
+            let (mut cmd, editor) =
+                ops::editor_command(config.editor.as_deref(), &dir, &env_file, true);
+            let status = cmd
+                .status()
+                .map_err(|e| format!("could not run '{editor}': {e}"))?;
+            if !status.success() {
+                return Err(format!("'{editor}' exited with {status}").into());
+            }
+            println!("Saved. Apply it with: rattle env up {}", env.name);
+            Ok(())
+        }
+        "path" => {
+            let env = envs::find_env(&config, &name()?)?;
+            println!("{}", envs::env_dir(&config, file, &env.name).display());
+            Ok(())
+        }
+        _ => Err(format!("unknown env command: {action}\n{ENV_USAGE}").into()),
+    }
+}
+
+fn env_list(file: &Path, config: &Config, store: &Store) -> Result<()> {
+    if config.envs.is_empty() {
+        println!("No environments yet. Create one with: rattle env create <name> --dir <folder>");
+        return Ok(());
+    }
+    let width = config.envs.iter().map(|e| e.name.len()).max().unwrap_or(0);
+    for env in &config.envs {
+        let dir = envs::env_dir(config, file, &env.name);
+        let status = envs::status(config, &dir);
+        let members = envs::members(config, env, store).len();
+        let port = envs::find_template(config, &env.template)
+            .ok()
+            .and_then(|t| envs::base_port(&t, &dir))
+            .map(|p| format!("  ports from {p}"))
+            .unwrap_or_default();
+        let note = match &status {
+            envs::Status::Unknown(why) => format!("  ({why})"),
+            _ => String::new(),
+        };
+        println!(
+            " {:<width$}  {:<11}  {}  {members} project(s){port}{note}",
+            env.name,
+            status.label(),
+            env.template
+        );
+    }
+    Ok(())
+}
+
+fn env_create(file: &Path, config_file: &Path, config: &Config, rest: &[String]) -> Result<()> {
+    let (mut name, mut template, mut dirs) = (None, None, Vec::new());
+    let mut rest = rest.iter();
+    while let Some(arg) = rest.next() {
+        match arg.as_str() {
+            "-t" | "--template" => {
+                template = Some(rest.next().ok_or("--template needs a name")?.clone())
+            }
+            "--dir" => {
+                let dir = rest.next().ok_or("--dir needs a folder")?;
+                let path = std::fs::canonicalize(ops::expand_tilde(dir))
+                    .map_err(|e| format!("cannot access '{dir}': {e}"))?;
+                // Written as ~/… when under home, so the config stays readable.
+                let home = std::fs::canonicalize(store::home_dir()).unwrap_or_default();
+                dirs.push(match path.strip_prefix(&home) {
+                    Ok(rel) if !home.as_os_str().is_empty() => format!("~/{}", rel.display()),
+                    _ => path.display().to_string(),
+                });
+            }
+            other if other.starts_with('-') => {
+                return Err(format!("unknown env create option: {other}").into())
+            }
+            other => name = Some(other.to_string()),
+        }
+    }
+    let name = name.ok_or_else(|| format!("create needs an environment name\n{ENV_USAGE}"))?;
+    envs::validate_name(&name)?;
+
+    // Add the environment to config.toml unless it is already defined there.
+    let env = match config.envs.iter().find(|e| e.name == name) {
+        Some(env) if template.is_some() || !dirs.is_empty() => {
+            return Err(format!(
+                "'{}' is already in {}; edit --template/--dir there",
+                env.name,
+                config_file.display()
+            )
+            .into())
+        }
+        Some(env) => env.clone(),
+        None => {
+            let env = config::EnvDef {
+                template: template.unwrap_or_else(|| "bindle".into()),
+                dirs,
+                ..config::EnvDef::new(&name)
+            };
+            envs::find_template(config, &env.template)?;
+            env
+        }
+    };
+    println!(
+        "Creating environment '{name}' from template '{}'…",
+        env.template
+    );
+    let made = envs::create(config, file, &env)?;
+    if !config.envs.iter().any(|e| e.name == name) {
+        config::append_env(config_file, &env)?;
+        println!("Added [envs.{name}] to {}", config_file.display());
+    }
+    println!("Files: {}", made.dir.display());
+    for (key, value) in &made.vars {
+        println!("  {key}={value}");
+    }
+    if env.dirs.is_empty() {
+        println!("Tip: add the folders whose projects belong here to `dirs` in [envs.{name}].");
+    }
+    println!(
+        "Next: review its settings (rattle env config {name}), then start it (rattle env up {name})."
+    );
+    Ok(())
+}
+
+fn env_links(
+    file: &Path,
+    config: &Config,
+    env: &config::EnvDef,
+    store: &Store,
+    project: Option<&store::Project>,
+) -> Result<Vec<(String, String)>> {
+    let template = envs::find_template(config, &env.template)?;
+    let folder = match project {
+        Some(p) => envs::project_folder(env, &template, store, p),
+        None => template.workdir.clone(),
+    };
+    Ok(envs::links(
+        &template,
+        &envs::env_dir(config, file, &env.name),
+        &folder,
+    ))
+}
+
+fn print_links(
+    file: &Path,
+    config: &Config,
+    env: &config::EnvDef,
+    store: &Store,
+    project: Option<&store::Project>,
+) -> Result<()> {
+    for (label, url) in env_links(file, config, env, store, project)? {
+        println!("  {label}: {url}");
+    }
+    Ok(())
+}
+
 fn run_visible(mut cmd: std::process::Command) -> Result<()> {
     println!("$ {}", deps::describe(&cmd));
     let program = cmd.get_program().to_string_lossy().into_owned();

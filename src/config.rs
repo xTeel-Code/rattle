@@ -106,6 +106,29 @@ delete_files = \"off\"
 # project name; the command runs in new_project_dir and must create {name}.
 # templates.web = \"npm create vite@latest {name} -- --template react-ts\"
 
+# Dev environments (`v` in the TUI, `rattle env`): each is its own container,
+# so e.g. work and personal projects never share one. Projects inside an
+# environment's `dirs` (or listed in `projects`) belong to it and are mounted
+# into its container. Create one with `rattle env create work`.
+# [envs.work]
+# dirs = [\"~/code/work\"]
+# template = \"bindle\"     # built in: github.com/suckharder/bindle-le
+# mount = true             # false: a plain box, code lives only inside it
+#
+# Environment files go to envs_dir (default: envs/ next to this file),
+# `docker` is the container CLI used for them, and `browser` opens their
+# links (default: the system's `open` / `xdg-open`).
+# envs_dir = \"~/.rattle/envs\"
+# docker = \"docker\"
+# browser = \"open -a Firefox\"
+#
+# Every built-in template setting can be overridden, or a new template added:
+# [env_templates.bindle]
+# compose = \"https://raw.githubusercontent.com/suckharder/bindle-le/main/template/compose.yaml\"
+# port_base = 18000
+# [env_templates.bindle.links]
+# editor = \"http://127.0.0.1:${PORT_CODE}/?folder=${FOLDER}\"
+
 # Uncomment to override the defaults shown here.
 # A folder counts as a project if it contains any of these.
 # markers = [\".git\", \"Cargo.toml\", \"pyproject.toml\", \"package.json\", \"go.mod\",
@@ -129,6 +152,44 @@ pub struct Config {
     pub new_project_dir: Option<String>,
     /// User-defined `templates.<name> = "command"`, in file order.
     pub templates: Vec<(String, String)>,
+    /// `[envs.<name>]` dev environments, in file order.
+    pub envs: Vec<EnvDef>,
+    /// `[env_templates.<name>]` settings as (template, field, raw value), e.g.
+    /// ("bindle", "ports.PORT_CODE", "0"). Applied over the built-in templates.
+    pub env_templates: Vec<(String, String, String)>,
+    /// Where environment files live (default: `envs/` next to the registry).
+    pub envs_dir: Option<String>,
+    /// The container CLI: `docker` (default) or a compatible one.
+    pub docker: String,
+    /// Command that opens environment links (default: `open` / `xdg-open`).
+    pub browser: Option<String>,
+}
+
+/// A dev environment from `[envs.<name>]`: one container that a group of
+/// projects belongs to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnvDef {
+    pub name: String,
+    /// Which env template it is made from (default: "bindle").
+    pub template: String,
+    /// Projects inside these folders belong to this environment.
+    pub dirs: Vec<String>,
+    /// More projects by name.
+    pub projects: Vec<String>,
+    /// Mount those projects into the container (default: true).
+    pub mount: bool,
+}
+
+impl EnvDef {
+    pub fn new(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            template: "bindle".into(),
+            dirs: Vec::new(),
+            projects: Vec::new(),
+            mount: true,
+        }
+    }
 }
 
 impl Default for Config {
@@ -143,6 +204,11 @@ impl Default for Config {
             delete_files: DeleteFiles::Off,
             new_project_dir: None,
             templates: Vec::new(),
+            envs: Vec::new(),
+            env_templates: Vec::new(),
+            envs_dir: None,
+            docker: "docker".into(),
+            browser: None,
         }
     }
 }
@@ -210,6 +276,51 @@ impl Config {
                     let dir = unquote(&value);
                     config.new_project_dir = (!dir.trim().is_empty()).then(|| home_relative(dir));
                 }
+                "envs_dir" => {
+                    let dir = unquote(&value);
+                    config.envs_dir = (!dir.trim().is_empty()).then(|| home_relative(dir));
+                }
+                "browser" => {
+                    let browser = unquote(&value);
+                    config.browser = (!browser.trim().is_empty()).then_some(browser);
+                }
+                "docker" => {
+                    let docker = unquote(&value);
+                    if !docker.trim().is_empty() {
+                        config.docker = docker;
+                    }
+                }
+                k if k.starts_with("envs.") => {
+                    let Some((name, field)) = k["envs.".len()..].split_once('.') else {
+                        continue;
+                    };
+                    let name = unquote(name);
+                    let env = match config.envs.iter().position(|e| e.name == name) {
+                        Some(i) => &mut config.envs[i],
+                        None => {
+                            config.envs.push(EnvDef::new(&name));
+                            config.envs.last_mut().unwrap()
+                        }
+                    };
+                    match field {
+                        "template" => env.template = unquote(&value),
+                        "dirs" => {
+                            env.dirs = parse_list(&value).into_iter().map(home_relative).collect()
+                        }
+                        "projects" => env.projects = parse_list(&value),
+                        "mount" => env.mount = value != "false",
+                        _ => {}
+                    }
+                }
+                k if k.starts_with("env_templates.") => {
+                    if let Some((name, field)) = k["env_templates.".len()..].split_once('.') {
+                        config.env_templates.push((
+                            unquote(name),
+                            field.to_string(),
+                            unquote(&value),
+                        ));
+                    }
+                }
                 k if k.starts_with("templates.") => {
                     let name = unquote(&k["templates.".len()..]);
                     let command = unquote(&value);
@@ -239,6 +350,23 @@ impl Config {
         }
         config
     }
+}
+
+/// Adds an `[envs.<name>]` section at the end of the config file.
+pub fn append_env(file: &Path, env: &EnvDef) -> io::Result<()> {
+    let mut text = fs::read_to_string(file).unwrap_or_default();
+    if !text.is_empty() && !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push_str(&format!(
+        "\n[envs.{}]\ntemplate = {}\ndirs = {}\n",
+        env.name,
+        toml_string(&env.template),
+        toml_list(&env.dirs)
+    ));
+    let tmp = file.with_extension("toml.tmp");
+    fs::write(&tmp, text)?;
+    fs::rename(tmp, file)
 }
 
 /// Writes `updates` (key, already-formatted TOML value) into the config file,
@@ -506,6 +634,45 @@ mod tests {
         assert_eq!(
             set_values("", &[("max_depth", "2".into())]),
             "max_depth = 2\n"
+        );
+    }
+
+    #[test]
+    fn parses_envs_and_env_template_overrides() {
+        let c = Config::parse(
+            "docker = \"podman\"\nenvs_dir = \"boxes\"\n\
+             [envs.work]\ndirs = [\n  \"code/work\",\n  \"/srv/jobs\",\n]\nprojects = [\"infra\"]\n\
+             [envs.personal]\ntemplate = \"mine\"\nmount = false\n\
+             [env_templates.bindle]\nport_base = 19000\n\
+             [env_templates.bindle.ports]\nPORT_CODE = 0\n",
+        );
+        assert_eq!(c.docker, "podman");
+        assert_eq!(c.envs_dir.as_deref(), Some("~/boxes"));
+        let work = EnvDef {
+            dirs: vec!["~/code/work".into(), "/srv/jobs".into()],
+            projects: vec!["infra".into()],
+            ..EnvDef::new("work")
+        };
+        let personal = EnvDef {
+            template: "mine".into(),
+            mount: false,
+            ..EnvDef::new("personal")
+        };
+        assert_eq!(c.envs, vec![work, personal]);
+        assert_eq!(
+            c.env_templates,
+            vec![
+                (
+                    "bindle".to_string(),
+                    "port_base".to_string(),
+                    "19000".to_string()
+                ),
+                (
+                    "bindle".to_string(),
+                    "ports.PORT_CODE".to_string(),
+                    "0".to_string()
+                ),
+            ]
         );
     }
 
