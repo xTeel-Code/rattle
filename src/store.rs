@@ -38,10 +38,31 @@ impl Store {
     }
 
     pub fn save(&self, file: &Path) -> io::Result<()> {
-        // Write to a temp file and rename so a crash never truncates the registry.
-        let tmp = file.with_extension("toml.tmp");
+        // Write to a temp file and rename so a crash never truncates the
+        // registry; per process, so two writers never share a half-written file.
+        let tmp = file.with_extension(format!("toml.{}.tmp", std::process::id()));
         fs::write(&tmp, self.serialize())?;
         fs::rename(tmp, file)
+    }
+
+    /// Applies `change` to the registry as it is on disk right now, saves it,
+    /// and returns the result. The whole read-change-write holds an exclusive
+    /// lock on `<registry>.lock`, so two rattles (a TUI and a command in
+    /// another terminal) never lose each other's changes.
+    pub fn update<T>(file: &Path, change: impl FnOnce(&mut Store) -> T) -> io::Result<(Store, T)> {
+        if let Some(dir) = file.parent() {
+            fs::create_dir_all(dir)?;
+        }
+        let lock = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(file.with_extension("toml.lock"))?;
+        lock.lock()?; // released when `lock` is dropped
+        let mut store = Store::load(file)?;
+        let out = change(&mut store);
+        store.save(file)?;
+        Ok((store, out))
     }
 
     pub fn parse(text: &str) -> Self {

@@ -4,7 +4,7 @@
 use std::path::Path;
 use std::process::{Command, Output};
 
-use crate::config::strip_comment;
+use crate::config::{bracket_balance, string_array, strip_comment};
 use crate::store::unquote;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -259,11 +259,31 @@ fn parse_cargo(text: &str) -> Vec<Dep> {
                 *spec = unquote(value);
             }
         } else if let Some(group) = &section {
-            deps.push(Dep {
-                name: key,
-                spec: cargo_spec(value),
-                group: group.clone(),
-            });
+            // Dotted keys (`serde.workspace = true`, `serde.version = "1"`) are
+            // fields of dependency `serde`, not dependencies of their own.
+            let (name, field) = match key.split_once('.') {
+                Some((name, field)) => (unquote(name), Some(field)),
+                None => (key.clone(), None),
+            };
+            let spec = match field {
+                None => cargo_spec(value),
+                Some("version") => unquote(value),
+                Some("workspace") => "workspace".into(),
+                Some(_) => "*".into(),
+            };
+            match deps
+                .iter_mut()
+                .find(|d| d.name == name && d.group == *group)
+            {
+                // A later field refines the spec only if it says something.
+                Some(dep) if spec != "*" => dep.spec = spec,
+                Some(_) => {}
+                None => deps.push(Dep {
+                    name,
+                    spec,
+                    group: group.clone(),
+                }),
+            }
         }
     }
     flush(&mut table, &mut deps);
@@ -381,39 +401,16 @@ fn parse_pyproject(text: &str) -> Vec<Dep> {
     deps
 }
 
-/// Collects the quoted strings of a TOML array that starts in `first` and may
-/// continue on the following lines (advancing `i` past them). Strings inside
-/// inline tables (`{ include-group = "dev" }`) are skipped.
+/// Collects the strings of a TOML array that starts in `first` and may
+/// continue on the following lines (advancing `i` past them).
 fn take_string_array(first: &str, lines: &[&str], i: &mut usize) -> Vec<String> {
-    let mut items = Vec::new();
-    let (mut depth, mut braces, mut quote, mut current) = (0i32, 0i32, None::<char>, String::new());
-    let mut text = first.to_string();
-    loop {
-        for c in text.chars() {
-            match (quote, c) {
-                (Some(q), c) if c == q => {
-                    if braces == 0 {
-                        items.push(std::mem::take(&mut current));
-                    }
-                    current.clear();
-                    quote = None;
-                }
-                (Some(_), c) => current.push(c),
-                (None, '"' | '\'') => quote = Some(c),
-                (None, '[') => depth += 1,
-                (None, ']') => depth -= 1,
-                (None, '{') => braces += 1,
-                (None, '}') => braces -= 1,
-                (None, '#') => break, // comment outside a string
-                _ => {}
-            }
-        }
-        if depth <= 0 || *i >= lines.len() {
-            return items;
-        }
-        text = lines[*i].to_string();
+    let mut text = strip_comment(first).to_string();
+    while bracket_balance(&text) > 0 && *i < lines.len() {
+        text.push('\n');
+        text.push_str(strip_comment(lines[*i]));
         *i += 1;
     }
+    string_array(&text)
 }
 
 /// `requests[socks]>=2.31; python_version < "3.13"` → (`requests`, `[socks]>=2.31; …`).
@@ -496,6 +493,32 @@ mod tests {
                 dep("tokio", "1.40", Group::Normal),
                 dep("libc", "0.2", Group::Other("target".into())),
             ]
+        );
+    }
+
+    #[test]
+    fn parses_dotted_cargo_keys_as_one_dependency() {
+        let deps = parse_cargo(
+            "[dependencies]\nserde.workspace = true\nregex.version = \"1.10\"\nregex.features = [\"std\"]\n\
+             [dev-dependencies]\nserde.workspace = true\n",
+        );
+        assert_eq!(
+            deps,
+            vec![
+                dep("serde", "workspace", Group::Normal),
+                dep("regex", "1.10", Group::Normal),
+                dep("serde", "workspace", Group::Dev),
+            ]
+        );
+        // Removing uses the real name, not "serde.workspace".
+        assert_eq!(
+            describe(&remove_command(
+                Manager::Cargo,
+                Path::new("."),
+                &deps[0].name,
+                &deps[0].group
+            )),
+            "cargo remove serde"
         );
     }
 

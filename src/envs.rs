@@ -42,7 +42,11 @@ pub struct EnvTemplate {
     pub shell: String,
 }
 
-const BINDLE_RAW: &str = "https://raw.githubusercontent.com/suckharder/bindle-le/main/template";
+/// Pinned to a reviewed bindle-le commit, never its moving `main`: the
+/// compose file starts a privileged container, so a change upstream must not
+/// reach users unseen. Bump it deliberately after reading the diff.
+const BINDLE_RAW: &str =
+    "https://raw.githubusercontent.com/suckharder/bindle-le/9632298c6f09acbf3620c7428c407a02057b3aa6/template";
 
 /// The built-in templates: bindle-le (a browser VS Code box).
 pub fn builtin() -> Vec<EnvTemplate> {
@@ -479,7 +483,7 @@ pub fn create(config: &Config, registry: &Path, env: &EnvDef) -> Result<Created,
                 .iter()
                 .map(|(k, o)| (k.clone(), (base + o).to_string())),
         );
-        std::fs::write(dir.join(".env"), set_env_vars(&env_text, &vars))
+        write_private(&dir.join(".env"), &set_env_vars(&env_text, &vars))
             .map_err(|e| e.to_string())?;
         Ok(vars)
     })();
@@ -495,11 +499,34 @@ pub fn create(config: &Config, registry: &Path, env: &EnvDef) -> Result<Created,
     }
 }
 
+/// Writes a file only its owner can read: `.env` holds passwords and tokens.
+fn write_private(path: &Path, contents: &str) -> std::io::Result<()> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    std::io::Write::write_all(&mut options.open(path)?, contents.as_bytes())?;
+    make_private(path)
+}
+
+/// Owner-only permissions (also for files written before Rattle did this).
+fn make_private(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
 /// Copies a local file, or downloads a URL with curl.
 fn fetch(source: &str, dest: &Path) -> Result<(), String> {
     if source.starts_with("http://") || source.starts_with("https://") {
+        // Bounded, so a stalled network fails instead of hanging forever.
         let out = Command::new("curl")
-            .args(["-fsSL", "-o"])
+            .args(["-fsSL", "--connect-timeout", "10", "--max-time", "60", "-o"])
             .arg(dest)
             .arg(source)
             .stdin(Stdio::null())
@@ -539,6 +566,12 @@ pub fn prepare_up(
             "environment '{}' isn't created yet; run: rattle env create {}",
             env.name, env.name
         ));
+    }
+    // .env files from before Rattle made them owner-only.
+    let env_file = dir.join(".env");
+    if env_file.exists() {
+        make_private(&env_file)
+            .map_err(|e| format!("cannot protect {}: {e}", env_file.display()))?;
     }
     let mounts = mounts(env, &template, store);
     let yaml = override_yaml(env, &template, &mounts);
@@ -945,6 +978,16 @@ mod tests {
         let registry = root.join("projects.toml");
         let made = create(&config, &registry, &EnvDef::new("work")).unwrap();
         assert!(made.dir.join("compose.yaml").is_file());
+        #[cfg(unix)]
+        {
+            // .env holds passwords and tokens: owner-only.
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(made.dir.join(".env"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600, "{mode:o}");
+        }
         let env = read_env_file(&made.dir.join(".env"));
         assert!(env.contains(&("COMPOSE_PROJECT_NAME".into(), "rattle-work".into())));
         assert!(env.contains(&("PORT_CODE".into(), "41000".into())));

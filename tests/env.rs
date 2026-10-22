@@ -427,9 +427,8 @@ fn tui_envs_tab_changes_folders_and_mounting() {
     // Tab and Esc go back to Projects; the tags follow the new folders.
     tui.keys(&["Escape"]);
     tui.wait_for("Projects (4)");
-    let screen = tui.wait_for("game");
-    let game = screen.lines().find(|l| l.contains("game")).unwrap();
-    assert!(game.contains("[work"), "game now belongs to work: {game}");
+    // game now belongs to work.
+    tui.wait_for_row(" game ", |row| row.contains("[work"));
 }
 
 #[test]
@@ -473,9 +472,7 @@ fn tui_envs_tab_removes_an_environment_after_typing_its_name() {
 
     // Back in Projects, work's projects no longer have a tag.
     tui.keys(&["Tab"]);
-    let screen = tui.wait_for("Projects (");
-    let api = screen.lines().find(|l| l.contains(" api ")).unwrap();
-    assert!(!api.contains("[work"), "{api}");
+    tui.wait_for_row(" api ", |row| !row.contains("[work"));
 }
 
 #[test]
@@ -484,4 +481,48 @@ fn cli_env_remove_needs_a_terminal() {
     let err = sb.run(&["env", "remove", "work"]).err();
     assert!(err.contains("needs an interactive terminal"), "{err}");
     assert!(sb.config_text().contains("[envs.work]"));
+}
+
+/// Regression test: creating an environment fetched its template on the TUI
+/// thread, freezing it on a slow network. Here the compose file comes from a
+/// local HTTP server that answers only when the test lets it.
+#[test]
+fn tui_stays_responsive_while_an_environment_is_created() {
+    use std::io::{Read, Write};
+    let sb = sandbox("env-tui-slow", 44200);
+    let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/compose.yaml", server.local_addr().unwrap());
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        let (mut conn, _) = server.accept().unwrap();
+        let mut request = [0u8; 1024];
+        let _ = conn.read(&mut request);
+        released.recv().unwrap(); // the "slow network"
+        let body = "services:\n  bindle:\n    image: fake\n";
+        let reply = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        conn.write_all(reply.as_bytes()).unwrap();
+    });
+    let config = sb.config_text().replace(
+        &format!("compose = \"{}/tpl/compose.yaml\"", sb.home.display()),
+        &format!("compose = \"{url}\""),
+    );
+    sb.write_config(&config);
+    let Some(tui) = Tui::start(&sb, "env-tui-slow", &[]) else {
+        return;
+    };
+    tui.wait_for("Projects (");
+    tui.keys(&["v", "n"]);
+    tui.type_text("slow");
+    tui.keys(&["Enter", "Enter"]);
+    tui.wait_for("creating environment 'slow'");
+
+    // Still drawing and answering keys while the download hangs.
+    tui.keys(&["Escape"]);
+    tui.wait_for("can't be stopped halfway");
+    release.send(()).unwrap();
+    tui.wait_for("created 'slow'");
+    assert!(sb.config_text().contains("[envs.slow]"));
 }

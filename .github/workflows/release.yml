@@ -6,6 +6,8 @@ on:
   push:
     tags: ["v*"]
 
+# Actions are pinned to commit SHAs (the tag in the comment): this workflow
+# can publish releases, so a moved tag upstream must not change what runs.
 permissions:
   contents: write
 
@@ -17,7 +19,7 @@ jobs:
     name: Create release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Create the release (draft until all binaries are uploaded)
         env:
           GH_TOKEN: ${{ github.token }}
@@ -36,9 +38,10 @@ jobs:
           - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm }
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
       - name: Install musl tools
         if: contains(matrix.target, 'musl')

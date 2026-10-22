@@ -221,18 +221,10 @@ fn input_text(input: &mut Input) -> &mut String {
     }
 }
 
-/// `path` with the home folder written as `~`.
-fn tilde(path: &Path) -> String {
-    let home = crate::store::home_dir();
-    match path.strip_prefix(&home) {
-        Ok(rel) if !home.as_os_str().is_empty() => format!("~/{}", rel.display()),
-        _ => path.display().to_string(),
-    }
-}
-
 impl App {
+    /// The cached config (see [`App::reload_config_cache`]).
     fn config(&self) -> Config {
-        Config::load(&config::path_for(&self.file)).unwrap_or_default()
+        self.config.clone()
     }
 
     /// Re-reads which environment each project is in, and starts reading
@@ -256,6 +248,12 @@ impl App {
         self.envs_view.list.select((count > 0).then_some(sel));
         if config.envs.is_empty() {
             self.env_status.clear();
+            return;
+        }
+        // One status check at a time: `docker compose ps` can be slow (e.g.
+        // while Docker starts), so later requests wait for this one.
+        if self.env_status_rx.is_some() {
+            self.env_refresh_again = true;
             return;
         }
         let (tx, rx) = mpsc::channel();
@@ -286,7 +284,11 @@ impl App {
                 self.env_status_rx = None;
             }
             Err(mpsc::TryRecvError::Disconnected) => self.env_status_rx = None,
-            Err(mpsc::TryRecvError::Empty) => {}
+            Err(mpsc::TryRecvError::Empty) => return,
+        }
+        // Something changed while that check ran: check again, once.
+        if std::mem::take(&mut self.env_refresh_again) {
+            self.refresh_envs();
         }
     }
 
@@ -479,7 +481,7 @@ impl App {
                     );
                 }
             }
-            EnvsAction::Create { name, dirs } => self.create_env(config, &name, dirs, term)?,
+            EnvsAction::Create { name, dirs } => self.create_env(config, &name, dirs),
             EnvsAction::SetDirs { env, dirs } => {
                 let value = config::toml_list(&dirs);
                 match config::save_table_value(
@@ -489,7 +491,7 @@ impl App {
                     &value,
                 ) {
                     Ok(()) => {
-                        self.refresh_envs();
+                        self.config_changed();
                         self.set_status(self.apply_hint(&env, "folders saved"), false);
                     }
                     Err(e) => self.set_status(format!("could not save folders: {e}"), true),
@@ -507,7 +509,7 @@ impl App {
                     &mount.to_string(),
                 ) {
                     Ok(()) => {
-                        self.refresh_envs();
+                        self.config_changed();
                         let what = if mount {
                             "projects will be mounted"
                         } else {
@@ -545,11 +547,17 @@ impl App {
         }
     }
 
+    /// The config file was just changed here: reload it, then the environments.
+    fn config_changed(&mut self) {
+        self.refresh_config();
+        self.refresh_envs();
+    }
+
     fn finish_remove(&mut self, name: &str) {
         let config = self.config();
         match envs::forget(&config, &self.file, name) {
             Ok(()) => {
-                self.refresh_envs();
+                self.config_changed();
                 self.set_status(
                     format!("removed '{name}'; its volumes are kept (creating '{name}' again reattaches them)"),
                     false,
@@ -559,48 +567,47 @@ impl App {
         }
     }
 
-    fn create_env(
-        &mut self,
-        config: &Config,
-        name: &str,
-        dirs: Vec<String>,
-        term: &mut Term,
-    ) -> Result<()> {
+    /// Fetches the template's files in the background (a slow network must
+    /// not freeze the TUI), then finishes in [`App::finish_create_env`].
+    fn create_env(&mut self, config: &Config, name: &str, dirs: Vec<String>) {
         if let Err(e) = envs::validate_name(name) {
-            self.set_status(e, true);
-            return Ok(());
+            return self.set_status(e, true);
         }
         let existing = config.envs.iter().find(|e| e.name == name).cloned();
-        let env = existing.clone().unwrap_or_else(|| EnvDef {
+        let in_config = existing.is_some();
+        let env = existing.unwrap_or_else(|| EnvDef {
             dirs,
             ..EnvDef::new(name)
         });
-        // Downloading the template's two files only takes a moment.
-        self.set_status(format!("creating environment '{name}'…"), false);
-        term.draw(|f| self.draw(f))?;
-        match envs::create(config, &self.file, &env) {
-            Ok(_) => {
-                if existing.is_none() {
-                    if let Err(e) = config::append_env(&config::path_for(&self.file), &env) {
-                        self.set_status(
-                            format!("created, but could not add it to config: {e}"),
-                            true,
-                        );
-                        return Ok(());
-                    }
-                }
-                self.refresh_envs();
-                // Select the new environment.
-                let index = self.config().envs.iter().position(|e| e.name == name);
-                self.envs_view.list.select(index);
-                self.set_status(
-                    format!("created '{name}'; press c to review its settings, u to start it"),
-                    false,
+        let (config, file, task_env) = (config.clone(), self.file.clone(), env.clone());
+        self.status = None;
+        self.job = Some(Job::spawn_task(
+            format!("creating environment '{name}'"),
+            JobKind::EnvCreate { env, in_config },
+            move || envs::create(&config, &file, &task_env).map(|_| ()),
+        ));
+    }
+
+    /// The environment's files exist: add it to the config and select it.
+    pub(super) fn finish_create_env(&mut self, env: &EnvDef, in_config: bool) {
+        if !in_config {
+            if let Err(e) = config::append_env(&config::path_for(&self.file), env) {
+                return self.set_status(
+                    format!("created, but could not add it to config: {e}"),
+                    true,
                 );
             }
-            Err(e) => self.set_status(e, true),
         }
-        Ok(())
+        self.config_changed();
+        let index = self.config().envs.iter().position(|e| e.name == env.name);
+        self.envs_view.list.select(index);
+        self.set_status(
+            format!(
+                "created '{}'; press c to review its settings, u to start it",
+                env.name
+            ),
+            false,
+        );
     }
 
     /// Handles a finished environment job (see [`App::tick_job`]).
@@ -764,7 +771,7 @@ impl App {
                     members.join(", ")
                 }),
             ]),
-            Line::from(vec![label("files"), Span::raw(tilde(&dir))]),
+            Line::from(vec![label("files"), Span::raw(ops::tilde(&dir))]),
         ];
         let links = self.env_links(&config, env, None);
         for (i, (name, url)) in links.iter().enumerate() {
@@ -794,7 +801,7 @@ impl App {
     /// typed, the last message, or the keys.
     pub(super) fn draw_envs_footer(&self, f: &mut Frame, area: Rect) {
         let line = if let Some(job) = &self.job {
-            Line::from(format!(" {}", job.status_line()).yellow())
+            self.job_line(job)
         } else if let Some(input) = &self.envs_view.input {
             let (label, text) = match input {
                 Input::NewName(text) => (" New environment name: ".to_string(), text),

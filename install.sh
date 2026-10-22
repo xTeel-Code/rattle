@@ -95,15 +95,31 @@ install_from_source() {
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
   then run this installer again."
     fi
-    say "building from source with cargo (a minute or two)"
     # --root puts the binary in $BIN_DIR, same as the prebuilt one.
     root=$(dirname "$BIN_DIR")
     [ "$(basename "$BIN_DIR")" = bin ] || die "RATTLE_INSTALL_DIR must end in /bin when building from source"
-    if [ "$VERSION" = latest ]; then
-        cargo install --locked --force --root "$root" --git "https://github.com/$REPO"
-    else
-        cargo install --locked --force --root "$root" --git "https://github.com/$REPO" --tag "$VERSION"
+    # Build a release, like the prebuilt path; main only if none exists yet.
+    tag="$VERSION"
+    if [ "$tag" = latest ]; then
+        tag=$(latest_tag) || tag=""
     fi
+    if [ -n "$tag" ]; then
+        say "building $tag from source with cargo (a minute or two)"
+        cargo install --locked --force --root "$root" --git "https://github.com/$REPO" --tag "$tag"
+    else
+        say "no release yet; building the latest main from source with cargo"
+        cargo install --locked --force --root "$root" --git "https://github.com/$REPO"
+    fi
+}
+
+# The latest release's tag: GitHub redirects /releases/latest to
+# /releases/tag/<tag> (to /releases when there is none).
+latest_tag() {
+    url=$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest") || return 1
+    case "$url" in
+        */releases/tag/*) echo "${url##*/}" ;;
+        *) return 1 ;;
+    esac
 }
 
 if [ "${RATTLE_FROM_SOURCE:-0}" = 1 ] || ! install_binary; then

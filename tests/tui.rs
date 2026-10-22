@@ -92,6 +92,29 @@ fn enter_after_another_key_works_immediately() {
     assert_eq!(tui.wait_exit(), format!("{beta}\nEXIT=0\n"));
 }
 
+/// Regression test: the TUI used to save its own stale copy of the
+/// registry, erasing projects added in another terminal meanwhile.
+#[test]
+fn changes_from_another_terminal_survive_tui_edits() {
+    let sb = with_projects("tui-concurrent");
+    let Some(tui) = Tui::start(&sb, "concurrent", &[]) else {
+        return;
+    };
+    tui.wait_for("auto-scan: added 2");
+    let outside = sb.dir("elsewhere/outside");
+    sb.run(&["create", outside.to_str().unwrap()]).ok();
+
+    tui.keys(&["d"]); // removes the selected project: alpha
+    tui.wait_for("Remove 'alpha' from Rattle?");
+    tui.keys(&["y"]);
+    tui.wait_for("removed 'alpha' (files kept)");
+    let mut registered = sb.registered();
+    registered.sort();
+    assert_eq!(registered, vec!["beta", "outside"]);
+    // And the TUI now shows the project added from outside.
+    tui.wait_for("outside");
+}
+
 #[test]
 fn add_and_remove_an_entry() {
     let sb = Sandbox::new("tui-add");
@@ -226,6 +249,65 @@ fn slow_template_runs_in_background_and_esc_cancels_it() {
     );
     assert!(!sb.home.join("code/slow").exists());
     assert!(sb.registered().is_empty());
+}
+
+/// Starts a template that ignores SIGTERM (its `sleep` inherits that) and
+/// leaves a marker if its child survives; returns the TUI, waiting at "Esc cancels".
+fn start_stuck_template(sb: &Sandbox, name: &str) -> Option<(Tui, std::path::PathBuf)> {
+    let marker = sb.home.join("child-survived");
+    sb.write_config(&format!(
+        "scan_dirs = [\"code\"]\n[templates]\nempty = \"trap '' TERM; (sleep 6; touch '{}') & sleep 30; mkdir {{name}}\"\n",
+        marker.display()
+    ));
+    let tui = Tui::start(sb, name, &[])?;
+    tui.wait_for("No projects yet");
+    tui.keys(&["n"]);
+    tui.type_text("stuck");
+    tui.keys(&["Enter"]);
+    tui.wait_for("Template for 'stuck'");
+    tui.keys(&["Enter"]);
+    tui.wait_for("Esc cancels");
+    Some((tui, marker))
+}
+
+/// Regression test: a command ignoring SIGTERM used to leave the TUI stuck
+/// on "cancelling…"; now it is killed after a few seconds.
+#[test]
+fn esc_kills_a_command_that_ignores_the_stop_signal() {
+    let sb = Sandbox::new("tui-stuck");
+    let Some((tui, marker)) = start_stuck_template(&sb, "stuck") else {
+        return;
+    };
+    let started = std::time::Instant::now();
+    tui.keys(&["Escape"]);
+    tui.wait_for("Esc again to force");
+    tui.wait_for("cancelled creating 'stuck'");
+    let took = started.elapsed();
+    assert!(took < Duration::from_secs(8), "took {took:?}");
+    assert!(
+        took > Duration::from_secs(2),
+        "SIGTERM first, then a grace period: {took:?}"
+    );
+    std::thread::sleep(Duration::from_secs(7));
+    assert!(!marker.exists(), "the template's child kept running");
+}
+
+#[test]
+fn second_esc_forces_at_once() {
+    let sb = Sandbox::new("tui-stuck-force");
+    let Some((tui, _)) = start_stuck_template(&sb, "stuck-force") else {
+        return;
+    };
+    let started = std::time::Instant::now();
+    tui.keys(&["Escape"]);
+    tui.wait_for("Esc again to force");
+    tui.keys(&["Escape"]);
+    tui.wait_for("cancelled creating 'stuck'");
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        started.elapsed()
+    );
 }
 
 /// Regression test: a process left behind by a template (here one that also
