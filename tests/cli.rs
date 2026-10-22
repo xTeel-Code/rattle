@@ -59,6 +59,10 @@ fn help_and_unknown_commands() {
     assert!(sb.run(&[]).ok().contains("Usage: rattle"));
     let unknown = sb.run(&["bogus"]);
     assert!(!unknown.ok && unknown.stderr.contains("unknown command: bogus"));
+    let version = format!("rattle {}\n", env!("CARGO_PKG_VERSION"));
+    for flag in ["--version", "-V", "version"] {
+        assert_eq!(sb.run(&[flag]).ok(), version);
+    }
 }
 
 #[test]

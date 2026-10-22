@@ -299,3 +299,7 @@ the release. `install.sh` picks them up from then on.
 - [x] Dev environments: separate containers for groups of projects
 - [x] One-line install script
 - [ ] Dev environments on another machine (over SSH)
+
+## License
+MIT, see [LICENSE](LICENSE). The built-in bindle-le environment template is a
+separate project with its own license (MIT); Rattle only downloads its files.
