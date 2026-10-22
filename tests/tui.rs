@@ -92,6 +92,29 @@ fn enter_after_another_key_works_immediately() {
     assert_eq!(tui.wait_exit(), format!("{beta}\nEXIT=0\n"));
 }
 
+/// Regression test: the TUI used to save its own stale copy of the
+/// registry, erasing projects added in another terminal meanwhile.
+#[test]
+fn changes_from_another_terminal_survive_tui_edits() {
+    let sb = with_projects("tui-concurrent");
+    let Some(tui) = Tui::start(&sb, "concurrent", &[]) else {
+        return;
+    };
+    tui.wait_for("auto-scan: added 2");
+    let outside = sb.dir("elsewhere/outside");
+    sb.run(&["create", outside.to_str().unwrap()]).ok();
+
+    tui.keys(&["d"]); // removes the selected project: alpha
+    tui.wait_for("Remove 'alpha' from Rattle?");
+    tui.keys(&["y"]);
+    tui.wait_for("removed 'alpha' (files kept)");
+    let mut registered = sb.registered();
+    registered.sort();
+    assert_eq!(registered, vec!["beta", "outside"]);
+    // And the TUI now shows the project added from outside.
+    tui.wait_for("outside");
+}
+
 #[test]
 fn add_and_remove_an_entry() {
     let sb = Sandbox::new("tui-add");

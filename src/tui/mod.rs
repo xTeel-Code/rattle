@@ -267,9 +267,20 @@ impl App {
         self.status = Some((msg.into(), error));
     }
 
-    fn save(&mut self) {
-        if let Err(e) = self.store.save(&self.file) {
-            self.set_status(format!("could not save registry: {e}"), true);
+    /// Changes the registry through [`Store::update`], which re-reads it under
+    /// a lock, so changes another rattle made meanwhile are kept, then shows
+    /// the result. `None` (with an error in the status line) if saving failed.
+    fn update_store<T>(&mut self, change: impl FnOnce(&mut Store) -> T) -> Option<T> {
+        match Store::update(&self.file, change) {
+            Ok((store, out)) => {
+                self.store = store;
+                self.refilter();
+                Some(out)
+            }
+            Err(e) => {
+                self.set_status(format!("could not save registry: {e}"), true);
+                None
+            }
         }
     }
 
@@ -297,24 +308,25 @@ impl App {
                 _ => self.mode = Mode::Normal,
             },
             Mode::ConfirmDelete => {
+                self.mode = Mode::Normal;
                 if matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y')) {
-                    if let Some(i) = self.selected() {
-                        let p = self.store.projects.remove(i);
-                        self.set_status(format!("removed '{}' (files kept)", p.name), false);
-                        self.save();
-                        self.refilter();
+                    if let Some(name) = selected_name {
+                        if self.update_store(|s| s.remove(&name)).is_some() {
+                            self.set_status(format!("removed '{name}' (files kept)"), false);
+                        }
                     }
                 }
-                self.mode = Mode::Normal;
             }
             Mode::ConfirmPrune => {
-                if matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y')) {
-                    let gone = self.store.prune_missing();
-                    self.save();
-                    self.refilter();
-                    self.set_status(format!("removed {} missing project(s)", gone.len()), false);
-                }
                 self.mode = Mode::Normal;
+                if matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y')) {
+                    if let Some(gone) = self.update_store(Store::prune_missing) {
+                        self.set_status(
+                            format!("removed {} missing project(s)", gone.len()),
+                            false,
+                        );
+                    }
+                }
             }
             Mode::ConfirmDeleteFiles { path, how, input } => {
                 let confirmed = match (*how, key.code) {
@@ -521,10 +533,11 @@ impl App {
             Err(e) => return self.set_status(e, true),
         };
         let name = project.name.clone();
-        if let Err(e) = self.store.add(project) {
-            return self.set_status(e, true);
+        match self.update_store(|s| s.add(project)) {
+            Some(Ok(())) => {}
+            Some(Err(e)) => return self.set_status(e, true),
+            None => return,
         }
-        self.save();
         self.filter.clear();
         self.refilter();
         self.refresh_envs();
@@ -602,9 +615,10 @@ impl App {
                     };
                     return self.set_status(format!("cancelled creating '{name}'{leftover}"), true);
                 }
-                match templates::finish(&mut self.store, &template, &target, &output) {
-                    Ok(project) => {
-                        self.save();
+                match self.update_store(|s| templates::finish(s, &template, &target, &output)) {
+                    None => {}
+                    Some(Err(e)) => self.set_status(e, true),
+                    Some(Ok(project)) => {
                         self.filter.clear();
                         self.refilter();
                         self.list.select(
@@ -616,7 +630,6 @@ impl App {
                         self.set_status(format!("created '{name}' in {}", parent.display()), false);
                         self.refresh_envs();
                     }
-                    Err(e) => self.set_status(e, true),
                 }
             }
             JobKind::Deps => {
@@ -664,18 +677,19 @@ impl App {
 
     fn delete_files(&mut self, path: &Path, how: DeleteFiles) {
         let Some(i) = self.selected() else { return };
+        let name = self.store.projects[i].name.clone();
         if let Err(e) = ops::delete_folder(path, how) {
             return self.set_status(e, true);
         }
-        let p = self.store.projects.remove(i);
-        self.save();
-        self.refilter();
+        if self.update_store(|s| s.remove(&name)).is_none() {
+            return;
+        }
         let what = if how == DeleteFiles::Trash {
             "moved to the Trash"
         } else {
             "deleted"
         };
-        self.set_status(format!("removed '{}'; folder {what}", p.name), false);
+        self.set_status(format!("removed '{name}'; folder {what}"), false);
     }
 
     /// Runs a scan before the first key press when `auto_scan` is on and
@@ -709,11 +723,10 @@ impl App {
     }
 
     fn run_scan(&mut self, config: &Config, quiet: bool) {
-        let report = ops::scan_roots(&mut self.store, &config.scan_dirs, config);
-        if !report.added.is_empty() {
-            self.save();
-        }
-        self.refilter();
+        let Some(report) = self.update_store(|s| ops::scan_roots(s, &config.scan_dirs, config))
+        else {
+            return;
+        };
         self.refresh_envs();
         let missing = self.store.missing().len();
         if quiet && report.added.is_empty() && report.warnings.is_empty() && missing == 0 {

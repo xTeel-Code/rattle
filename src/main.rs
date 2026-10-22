@@ -134,10 +134,8 @@ fn create(file: &Path, arg: Option<&String>) -> Result<()> {
         None => prompt("Write a Path: ")?,
     };
     let project = ops::resolve_project(&raw)?;
-    let mut store = Store::load(file)?;
     let msg = format!("Added '{}' -> {}", project.name, project.path);
-    store.add(project)?;
-    store.save(file)?;
+    Store::update(file, |store| store.add(project))?.1?;
     println!("{msg}");
     Ok(())
 }
@@ -154,7 +152,7 @@ fn delete(file: &Path, args: &[String]) -> Result<()> {
     {
         return Err(format!("unknown delete option: {bad}").into());
     }
-    let mut store = Store::load(file)?;
+    let store = Store::load(file)?;
     // Accept either the project name or its index from `rattle show`.
     let name = match name.parse::<usize>() {
         Ok(i) if store.find(&name).is_none() && i < store.projects.len() => {
@@ -165,10 +163,9 @@ fn delete(file: &Path, args: &[String]) -> Result<()> {
     if with_files {
         return delete_with_files(file, store, &name);
     }
-    let removed = store
-        .remove(&name)
+    let removed = Store::update(file, |store| store.remove(&name))?
+        .1
         .ok_or_else(|| format!("no project named '{name}'"))?;
-    store.save(file)?;
     println!(
         "Removed '{}' (files at {} were left untouched)",
         removed.name, removed.path
@@ -178,7 +175,7 @@ fn delete(file: &Path, args: &[String]) -> Result<()> {
 
 /// `rattle delete <name> --files`: removes the entry and the folder itself,
 /// as allowed by `delete_files`, after an interactive confirmation.
-fn delete_with_files(file: &Path, mut store: Store, name: &str) -> Result<()> {
+fn delete_with_files(file: &Path, store: Store, name: &str) -> Result<()> {
     let config_file = config::path_for(file);
     let config = Config::load(&config_file)?;
     if config.delete_files == DeleteFiles::Off {
@@ -212,8 +209,7 @@ fn delete_with_files(file: &Path, mut store: Store, name: &str) -> Result<()> {
         return Ok(());
     }
     ops::delete_folder(&path, config.delete_files)?;
-    store.remove(name);
-    store.save(file)?;
+    Store::update(file, |store| store.remove(name))?;
     let how = if config.delete_files == DeleteFiles::Trash {
         "moved to the Trash"
     } else {
@@ -256,16 +252,18 @@ fn scan(file: &Path, args: &[String]) -> Result<()> {
         .into());
     }
 
-    let mut store = Store::load(file)?;
-    let report = ops::scan_roots(&mut store, &roots, &config);
+    let (store, report) = if dry_run {
+        let mut store = Store::load(file)?;
+        let report = ops::scan_roots(&mut store, &roots, &config);
+        (store, report)
+    } else {
+        Store::update(file, |store| ops::scan_roots(store, &roots, &config))?
+    };
     for w in &report.warnings {
         eprintln!("warning: {w}");
     }
     for p in &report.added {
         println!(" + {}  {}", p.name, p.path);
-    }
-    if !report.added.is_empty() && !dry_run {
-        store.save(file)?;
     }
     let verb = if dry_run { "Would add" } else { "Added" };
     println!(
@@ -284,8 +282,7 @@ fn scan(file: &Path, args: &[String]) -> Result<()> {
         );
         if !dry_run && io::stdin().is_terminal() {
             if confirm("Remove them from Rattle? (folders are already gone) [y/N] ")? {
-                let gone = store.prune_missing();
-                store.save(file)?;
+                let gone = Store::update(file, Store::prune_missing)?.1;
                 println!(
                     "Removed {} entr{}",
                     gone.len(),
@@ -305,17 +302,13 @@ fn prune(file: &Path, args: &[String]) -> Result<()> {
         Some("-n") | Some("--dry-run") => true,
         Some(other) => return Err(format!("unknown prune option: {other}").into()),
     };
-    let mut store = Store::load(file)?;
     let gone: Vec<_> = if dry_run {
-        store.missing().into_iter().cloned().collect()
+        Store::load(file)?.missing().into_iter().cloned().collect()
     } else {
-        store.prune_missing()
+        Store::update(file, Store::prune_missing)?.1
     };
     for p in &gone {
         println!(" - {}  {}", p.name, p.path);
-    }
-    if !gone.is_empty() && !dry_run {
-        store.save(file)?;
     }
     let verb = if dry_run { "Would remove" } else { "Removed" };
     println!("{verb} {} missing project(s)", gone.len());
@@ -371,7 +364,7 @@ fn new_project(file: &Path, args: &[String]) -> Result<()> {
     // A folder given with --in is relative to where rattle runs, like `create`.
     let parent = templates::parent_dir(&config, parent.as_deref())?;
 
-    let mut store = Store::load(file)?;
+    let store = Store::load(file)?;
     // Check first, so "Creating…" is only printed when it is really going to run.
     let mut prepared = templates::prepare(&store, &template, &name, &parent)?;
     println!(
@@ -383,8 +376,11 @@ fn new_project(file: &Path, args: &[String]) -> Result<()> {
         .command
         .output()
         .map_err(|e| format!("could not run template '{}': {e}", template.name))?;
-    let project = templates::finish(&mut store, &template.name, &prepared.target, &output)?;
-    store.save(file)?;
+    // Register it in the registry as it is now; the template may have run long.
+    let project = Store::update(file, |store| {
+        templates::finish(store, &template.name, &prepared.target, &output)
+    })?
+    .1?;
     println!("Created and added '{}' -> {}", project.name, project.path);
     Ok(())
 }

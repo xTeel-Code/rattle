@@ -396,3 +396,27 @@ fn config_command_uses_configured_editor_and_waits_for_gui_editors() {
         .err()
         .contains("could not run '/no/such/editor'"));
 }
+
+/// Regression test: concurrent writers used to overwrite each other's
+/// registry (and share one temp file).
+#[test]
+fn concurrent_creates_all_land_in_the_registry() {
+    let sb = Sandbox::new("concurrent");
+    let names: Vec<String> = (0..20).map(|i| format!("p{i:02}")).collect();
+    for name in &names {
+        sb.dir(&format!("code/{name}"));
+    }
+    let children: Vec<_> = names
+        .iter()
+        .map(|name| {
+            let path = sb.home.join("code").join(name);
+            sb.cmd(&["create", path.to_str().unwrap()]).spawn().unwrap()
+        })
+        .collect();
+    for mut child in children {
+        assert!(child.wait().unwrap().success());
+    }
+    let mut registered = sb.registered();
+    registered.sort();
+    assert_eq!(registered, names);
+}
