@@ -50,7 +50,11 @@ To make plain `rattle scan` and the TUI's auto-scan use your folders, set
 `scan_dirs` in the config: press `,` in the TUI, or run `rattle config`.
 
 ## TUI
-Run `rattle` with no arguments (or `rattle tui`) to open the interactive browser:
+Run `rattle` with no arguments (or `rattle tui`) to open the interactive browser.
+It has two tabs, **Projects** and **Environments**: `Tab` (or `v`) switches
+between them, `?` lists every key, `q` quits.
+
+**Projects tab**
 
 | Key | Action |
 | --- | --- |
@@ -60,17 +64,32 @@ Run `rattle` with no arguments (or `rattle tui`) to open the interactive browser
 | `a` | add a project folder |
 | `n` | create a new project from a template |
 | `p` | dependencies of the selected project: `a` add, `A` add dev, `x` remove, `r` reload |
+| `o` | open the project in its environment's editor (starts the environment if needed) |
+| `e` | open the project in your editor (`editor` in config, else `$VISUAL` / `$EDITOR`) |
 | `d` | delete the entry (files on disk are kept) |
 | `D` | delete the entry **and its folder** (only if `delete_files` allows it) |
 | `X` | remove entries whose folder no longer exists |
 | `s` | scan the `scan_dirs` from `config.toml` |
-| `e` | open the project in your editor (`editor` in config, else `$VISUAL` / `$EDITOR`) |
 | `c` | edit `config.toml` in your editor; reloads and rescans when you close it |
 | `,` | settings form: edit the config without leaving the TUI |
-| `v` | dev environments: `u` start, `s` stop, `r` restart, `o`/`1`-`9` open links, `x` shell, `l` logs, `c` settings, `n` new |
-| `o` | open the project in its environment's editor (starts the environment if needed) |
-| `?` | all keys (`j`/`k` scroll in small terminals) |
-| `q` / `Esc` | quit |
+
+Projects in an environment show it as a tag, `[work ●]` (● running, ○ stopped).
+
+**Environments tab**: the list on the left, details of the selected one on the
+right (status, folders, mounting, member projects, links, files).
+
+| Key | Action |
+| --- | --- |
+| `u` / `s` / `r` | start / stop / restart |
+| `o`, `1`-`9` | open its first / numbered link (starts it if needed) |
+| `x` | a shell inside it |
+| `l` | its logs, in the detail pane (`j`/`k` scroll) |
+| `c` | edit its settings (`.env`) |
+| `n` | create a new environment (name, then folders) |
+| `d` | change its project folders |
+| `m` | turn mounting its projects on or off |
+| `D` | remove it, after typing its name: container and files go, volumes stay |
+| `Esc` | back to Projects |
 
 Templates (`n`) and package managers (`p`) run in the background with a
 spinner; `Esc` cancels them, including anything they started.
@@ -83,26 +102,49 @@ cd "$(rattle)"
 Projects whose folder no longer exists are marked `missing`.
 
 ## Commands
+The same list as `rattle help`:
 ```
-rattle [command] [projectName | filePath]
-help    - shows help
-show    - lists your projects               (aliases: list, ls)
-create  - registers a project folder        (aliases: add)      e.g. rattle create ~/code/foo
-delete  - removes a project entry by name   (aliases: remove, rm) or by its number from `show`
-          rattle delete <name> --files also deletes the folder (see delete_files)
-scan    - registers every project found in your scan folders
-          rattle scan [-n | --dry-run] [-d | --depth N] [folder...]
-prune   - removes entries whose folder no longer exists   rattle prune [-n | --dry-run]
-new     - creates a project from a template and registers it
-          rattle new <name> [-t | --template T] [--in folder]    rattle new --list
-deps    - lists, adds or removes dependencies with the project's package manager
-          rattle deps [project] [list | add [--dev] <pkg>... | remove <pkg>...]
-env     - dev environments: one container per group of projects (see below)
-          rattle env [list | create <name> [--dir folder] | up | stop | restart |
-                     logs | shell | open | config | path <name>]
-config  - opens config.toml in your editor  (`rattle config path` prints its path)
+Projects
+  show                       list projects                  (aliases: list, ls)
+  create [path]              register a folder, e.g. `create .`   (alias: add)
+  delete <name | number>     remove an entry; files stay  (aliases: remove, rm)
+    --files                  also delete the folder (see delete_files in config)
+  scan [folder...]           register projects in folders (default: scan_dirs)
+    -n, --dry-run            only show what would be added
+    -d, --depth N            search N levels deep (default: max_depth)
+  prune [-n | --dry-run]     remove entries whose folder no longer exists
+
+New projects and dependencies
+  new <name>                 create a project from a template and register it
+    -t, --template T         the template (default: asks, or empty)
+    --in <folder>            where (default: new_project_dir, or 1st scan dir)
+    --list                   show the templates
+  deps [project] [list]      list dependencies; project is a name, number or
+                             folder (default: the current folder)
+  deps [project] add [--dev] <package>...   add, with the project's own tool
+  deps [project] remove <package>...        remove
+
+Dev environments (one container per group of projects; alias: envs)
+  env [list]                 list environments and whether they run
+  env create <name>          create one; adds [envs.<name>] to the config
+    --dir <folder>           whose projects belong to it (repeatable)
+    -t, --template T         its env template (default: bindle)
+  env up | stop | restart <name>   start (mounting its projects), stop, restart
+  env logs <name> [-f]       show its logs (-f follows them)
+  env shell <name> [project] a shell in its container, in the project's folder
+  env open <name> [link] [--project P]   open a link (default: the editor)
+  env config <name>          edit its settings (.env)
+  env path <name>            print the folder with its files
+  env remove <name>          remove it: container, files, config (volumes stay)
+
+Settings and info
+  config                     edit config.toml in your editor
+  config path                print where config.toml is
+  tui                        open the TUI
+  help                       show this help (also -h, --help)
+  version                    print the version (also -V, --version)
 ```
-Omitted arguments are asked for interactively.
+`create`, `delete` and `new` ask for a missing argument.
 
 Projects are stored in `~/.rattle/projects.toml` (override with `RATTLE_FILE`).
 Files written by the old Python version are read without changes.
@@ -182,9 +224,13 @@ rattle env up work                         # start it; prints its links
 rattle env open work --project api         # browser editor at that project
 rattle env shell work api                  # a shell in the container, in that project
 rattle env stop work
+rattle env remove work                     # container and files go; volumes stay
 ```
 In the TUI, projects show their environment as `[work ●]` (● running, ○ stopped),
-`v` manages environments and `o` opens the selected project in its environment.
+`o` opens the selected project in its environment, and the **Environments** tab
+(`Tab`) manages them: start, stop, open, logs, folders, mounting, create, remove.
+Removing keeps the environment's Docker volumes, so creating one with the same
+name later gets its code and settings back.
 
 How it works:
 - Each environment's files live in `~/.rattle/envs/<name>/`: the template's

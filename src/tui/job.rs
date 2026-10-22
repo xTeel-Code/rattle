@@ -22,6 +22,8 @@ pub(super) enum JobKind {
     Env { open: Option<String> },
     /// `l`: show the environment's logs.
     EnvLogs { env: String },
+    /// `D`: the container is being removed; then forget the environment.
+    EnvRemove { env: String },
 }
 
 pub(super) struct Job {

@@ -1,26 +1,35 @@
-//! The environments popup (`v`): start, stop, open and create dev environments.
+//! The Environments tab: create, start, stop, open, change and remove dev
+//! environments (one container per group of projects).
 
-use super::draw::popup;
+use super::draw::fit_hints;
 use super::*;
 use crate::config::EnvDef;
 use crate::envs::Status;
 
 pub(super) struct EnvsView {
     pub(super) list: ListState,
-    /// Logs of one environment, shown instead of the list: (env, lines, scroll).
+    /// Logs of one environment, shown in the detail pane: (env, lines, scroll).
     pub(super) logs: Option<(String, Vec<String>, usize)>,
-    /// Creating a new environment: its name, then its project folders.
-    pub(super) new: Option<NewEnv>,
+    /// A line being typed in the footer.
+    pub(super) input: Option<Input>,
 }
 
-pub(super) enum NewEnv {
-    Name(String),
-    Dirs { name: String, dirs: String },
+pub(super) enum Input {
+    /// `n`, step 1: the new environment's name.
+    NewName(String),
+    /// `n`, step 2: its project folders.
+    NewDirs { name: String, dirs: String },
+    /// `d`: an environment's project folders.
+    EditDirs { env: String, dirs: String },
+    /// `D`: the environment's name, typed to confirm removing it.
+    ConfirmRemove { env: String, typed: String },
 }
 
 pub(super) enum EnvsAction {
     Nothing,
-    Close,
+    /// Back to the Projects tab.
+    Leave,
+    Help,
     Up(String),
     Stop(String),
     Restart(String),
@@ -33,6 +42,35 @@ pub(super) enum EnvsAction {
         name: String,
         dirs: Vec<String>,
     },
+    SetDirs {
+        env: String,
+        dirs: Vec<String>,
+    },
+    ToggleMount(String),
+    Remove(String),
+}
+
+const HINTS: &[(&str, u8)] = &[
+    ("u start", 0),
+    ("s stop", 1),
+    ("r restart", 2),
+    ("o open", 0),
+    ("x shell", 2),
+    ("l logs", 2),
+    ("c settings", 3),
+    ("n new", 1),
+    ("d folders", 3),
+    ("m mount", 4),
+    ("D remove", 4),
+    ("Tab projects", 0),
+    ("? keys", 0),
+];
+
+fn split_dirs(text: &str) -> Vec<String> {
+    text.split(',')
+        .map(|d| d.trim().to_string())
+        .filter(|d| !d.is_empty())
+        .collect()
 }
 
 impl EnvsView {
@@ -42,63 +80,37 @@ impl EnvsView {
         Self {
             list,
             logs: None,
-            new: None,
+            input: None,
         }
+    }
+
+    pub(super) fn selected<'a>(&self, envs: &'a [EnvDef]) -> Option<&'a EnvDef> {
+        self.list.selected().and_then(|i| envs.get(i))
     }
 
     pub(super) fn on_key(&mut self, key: KeyEvent, envs: &[EnvDef]) -> EnvsAction {
         if let Some((_, lines, scroll)) = &mut self.logs {
+            let last = lines.len().saturating_sub(1);
             match key.code {
-                KeyCode::Down | KeyCode::Char('j') => {
-                    *scroll = (*scroll + 1).min(lines.len().saturating_sub(1))
-                }
+                KeyCode::Down | KeyCode::Char('j') => *scroll = (*scroll + 1).min(last),
                 KeyCode::Up | KeyCode::Char('k') => *scroll = scroll.saturating_sub(1),
-                KeyCode::Char('G') | KeyCode::End => *scroll = lines.len().saturating_sub(1),
+                KeyCode::Char('G') | KeyCode::End => *scroll = last,
                 KeyCode::Char('g') | KeyCode::Home => *scroll = 0,
                 _ => self.logs = None,
             }
             return EnvsAction::Nothing;
         }
-        if let Some(new) = &mut self.new {
-            let text = match new {
-                NewEnv::Name(text) | NewEnv::Dirs { dirs: text, .. } => text,
-            };
-            match key.code {
-                KeyCode::Esc => self.new = None,
-                KeyCode::Backspace => {
-                    text.pop();
-                }
-                KeyCode::Char(c) => text.push(c),
-                KeyCode::Enter => match std::mem::replace(new, NewEnv::Name(String::new())) {
-                    NewEnv::Name(name) => {
-                        *new = NewEnv::Dirs {
-                            name: name.trim().to_string(),
-                            dirs: String::new(),
-                        }
-                    }
-                    NewEnv::Dirs { name, dirs } => {
-                        self.new = None;
-                        let dirs = dirs
-                            .split(',')
-                            .map(|d| d.trim().to_string())
-                            .filter(|d| !d.is_empty())
-                            .collect();
-                        return EnvsAction::Create { name, dirs };
-                    }
-                },
-                _ => {}
-            }
-            return EnvsAction::Nothing;
+        if self.input.is_some() {
+            return self.on_input_key(key);
         }
 
-        let selected = self
-            .list
-            .selected()
-            .and_then(|i| envs.get(i))
-            .map(|e| e.name.clone());
+        let selected = self.selected(envs).map(|e| e.name.clone());
         let with = |f: fn(String) -> EnvsAction| selected.clone().map_or(EnvsAction::Nothing, f);
         match key.code {
-            KeyCode::Esc | KeyCode::Char('q') => EnvsAction::Close,
+            KeyCode::Esc | KeyCode::Tab | KeyCode::BackTab | KeyCode::Char('v') => {
+                EnvsAction::Leave
+            }
+            KeyCode::Char('?') => EnvsAction::Help,
             KeyCode::Down | KeyCode::Char('j') => {
                 self.list.select_next();
                 EnvsAction::Nothing
@@ -107,8 +119,34 @@ impl EnvsView {
                 self.list.select_previous();
                 EnvsAction::Nothing
             }
+            KeyCode::Char('g') | KeyCode::Home => {
+                self.list.select_first();
+                EnvsAction::Nothing
+            }
+            KeyCode::Char('G') | KeyCode::End => {
+                self.list.select_last();
+                EnvsAction::Nothing
+            }
             KeyCode::Char('n') => {
-                self.new = Some(NewEnv::Name(String::new()));
+                self.input = Some(Input::NewName(String::new()));
+                EnvsAction::Nothing
+            }
+            KeyCode::Char('d') => {
+                if let Some(env) = self.selected(envs) {
+                    self.input = Some(Input::EditDirs {
+                        env: env.name.clone(),
+                        dirs: env.dirs.join(", "),
+                    });
+                }
+                EnvsAction::Nothing
+            }
+            KeyCode::Char('D') => {
+                if let Some(env) = selected {
+                    self.input = Some(Input::ConfirmRemove {
+                        env,
+                        typed: String::new(),
+                    });
+                }
                 EnvsAction::Nothing
             }
             KeyCode::Char('u') => with(EnvsAction::Up),
@@ -117,6 +155,7 @@ impl EnvsView {
             KeyCode::Char('l') => with(EnvsAction::Logs),
             KeyCode::Char('x') => with(EnvsAction::Shell),
             KeyCode::Char('c') => with(EnvsAction::Config),
+            KeyCode::Char('m') => with(EnvsAction::ToggleMount),
             KeyCode::Char('o') | KeyCode::Enter => with(|e| EnvsAction::Open(e, 0)),
             KeyCode::Char(c @ '1'..='9') => selected.map_or(EnvsAction::Nothing, |e| {
                 EnvsAction::Open(e, c as usize - '1' as usize)
@@ -124,19 +163,97 @@ impl EnvsView {
             _ => EnvsAction::Nothing,
         }
     }
+
+    /// Typing in the footer; Enter moves to the next step or finishes.
+    fn on_input_key(&mut self, key: KeyEvent) -> EnvsAction {
+        match key.code {
+            KeyCode::Esc => self.input = None,
+            KeyCode::Backspace => {
+                if let Some(input) = &mut self.input {
+                    input_text(input).pop();
+                }
+            }
+            KeyCode::Char(c) => {
+                if let Some(input) = &mut self.input {
+                    input_text(input).push(c);
+                }
+            }
+            KeyCode::Enter => {
+                return match self.input.take() {
+                    Some(Input::NewName(name)) => {
+                        self.input = Some(Input::NewDirs {
+                            name: name.trim().to_string(),
+                            dirs: String::new(),
+                        });
+                        EnvsAction::Nothing
+                    }
+                    Some(Input::NewDirs { name, dirs }) => EnvsAction::Create {
+                        name,
+                        dirs: split_dirs(&dirs),
+                    },
+                    Some(Input::EditDirs { env, dirs }) => EnvsAction::SetDirs {
+                        env,
+                        dirs: split_dirs(&dirs),
+                    },
+                    Some(Input::ConfirmRemove { env, typed }) if typed == env => {
+                        EnvsAction::Remove(env)
+                    }
+                    Some(Input::ConfirmRemove { .. }) => {
+                        // A wrong name cancels: nothing to undo.
+                        EnvsAction::Nothing
+                    }
+                    None => EnvsAction::Nothing,
+                };
+            }
+            _ => {}
+        }
+        EnvsAction::Nothing
+    }
+}
+
+/// The text being edited by `input`.
+fn input_text(input: &mut Input) -> &mut String {
+    match input {
+        Input::NewName(text)
+        | Input::NewDirs { dirs: text, .. }
+        | Input::EditDirs { dirs: text, .. }
+        | Input::ConfirmRemove { typed: text, .. } => text,
+    }
+}
+
+/// `path` with the home folder written as `~`.
+fn tilde(path: &Path) -> String {
+    let home = crate::store::home_dir();
+    match path.strip_prefix(&home) {
+        Ok(rel) if !home.as_os_str().is_empty() => format!("~/{}", rel.display()),
+        _ => path.display().to_string(),
+    }
 }
 
 impl App {
+    fn config(&self) -> Config {
+        Config::load(&config::path_for(&self.file)).unwrap_or_default()
+    }
+
     /// Re-reads which environment each project is in, and starts reading
     /// every environment's status in the background.
     pub(super) fn refresh_envs(&mut self) {
-        let config = Config::load(&config::path_for(&self.file)).unwrap_or_default();
+        let config = self.config();
         self.project_envs = self
             .store
             .projects
             .iter()
             .filter_map(|p| envs::env_of(&config, p).map(|e| (p.name.clone(), e.name.clone())))
             .collect();
+        // Keep the selection on an existing environment.
+        let count = config.envs.len();
+        let sel = self
+            .envs_view
+            .list
+            .selected()
+            .unwrap_or(0)
+            .min(count.saturating_sub(1));
+        self.envs_view.list.select((count > 0).then_some(sel));
         if config.envs.is_empty() {
             self.env_status.clear();
             return;
@@ -242,13 +359,13 @@ impl App {
         let Some(env_name) = self.project_envs.get(&project.name).cloned() else {
             return self.set_status(
                 format!(
-                    "'{}' isn't in an environment; add its folder to dirs in [envs.<name>] (v)",
+                    "'{}' isn't in an environment; add its folder in the Environments tab (Tab, d)",
                     project.name
                 ),
                 true,
             );
         };
-        let config = Config::load(&config::path_for(&self.file)).unwrap_or_default();
+        let config = self.config();
         let Ok(env) = envs::find_env(&config, &env_name).cloned() else {
             return;
         };
@@ -262,16 +379,34 @@ impl App {
         }
     }
 
-    pub(super) fn on_envs_action(&mut self, action: EnvsAction, term: &mut Term) -> Result<()> {
-        let config = Config::load(&config::path_for(&self.file)).unwrap_or_default();
-        let env_named = |name: &str| envs::find_env(&config, name).cloned();
-        let dir_of = |name: &str| envs::env_dir(&config, &self.file, name);
+    /// A key in the Environments tab.
+    pub(super) fn on_envs_key(&mut self, key: KeyEvent, term: &mut Term) -> Result<()> {
+        let config = self.config();
+        let removing = matches!(self.envs_view.input, Some(Input::ConfirmRemove { .. }));
+        let action = self.envs_view.on_key(key, &config.envs);
+        self.status = None;
+        if removing && self.envs_view.input.is_none() && matches!(action, EnvsAction::Nothing) {
+            self.set_status("cancelled; nothing was removed", false);
+        }
+        self.on_envs_action(&config, action, term)
+    }
+
+    fn on_envs_action(
+        &mut self,
+        config: &Config,
+        action: EnvsAction,
+        term: &mut Term,
+    ) -> Result<()> {
+        let env_named = |name: &str| envs::find_env(config, name).cloned();
+        let dir_of = |name: &str| envs::env_dir(config, &self.file, name);
+        let table = |name: &str| format!("envs.{name}");
         match action {
             EnvsAction::Nothing => {}
-            EnvsAction::Close => self.mode = Mode::Normal,
+            EnvsAction::Leave => self.tab = Tab::Projects,
+            EnvsAction::Help => self.mode = Mode::Help { scroll: 0 },
             EnvsAction::Up(name) => {
                 if let Ok(env) = env_named(&name) {
-                    self.start_env(&config, &env, None);
+                    self.start_env(config, &env, None);
                 }
             }
             EnvsAction::Stop(name) | EnvsAction::Restart(name)
@@ -283,7 +418,7 @@ impl App {
                 )
             }
             EnvsAction::Stop(name) => {
-                let cmd = envs::compose(&config, &dir_of(&name), &["stop"]);
+                let cmd = envs::compose(config, &dir_of(&name), &["stop"]);
                 self.spawn_env_job(
                     cmd,
                     format!("stopping '{name}'"),
@@ -291,7 +426,7 @@ impl App {
                 );
             }
             EnvsAction::Restart(name) => {
-                let cmd = envs::compose(&config, &dir_of(&name), &["restart"]);
+                let cmd = envs::compose(config, &dir_of(&name), &["restart"]);
                 self.spawn_env_job(
                     cmd,
                     format!("restarting '{name}'"),
@@ -300,7 +435,7 @@ impl App {
             }
             EnvsAction::Logs(name) => {
                 let cmd = envs::compose(
-                    &config,
+                    config,
                     &dir_of(&name),
                     &["logs", "--tail", "300", "--no-color"],
                 );
@@ -312,8 +447,8 @@ impl App {
             }
             EnvsAction::Open(name, n) => {
                 if let Ok(env) = env_named(&name) {
-                    match self.env_links(&config, &env, None).into_iter().nth(n) {
-                        Some((_, url)) => self.open_in_env(&config, &env, url),
+                    match self.env_links(config, &env, None).into_iter().nth(n) {
+                        Some((_, url)) => self.open_in_env(config, &env, url),
                         None => self.set_status(format!("'{name}' has no link {}", n + 1), true),
                     }
                 }
@@ -322,9 +457,9 @@ impl App {
                 if self.env_status.get(&name) != Some(&Status::Running) {
                     self.set_status(format!("'{name}' isn't running; press u to start it"), true);
                 } else if let Ok(env) = env_named(&name) {
-                    let template = envs::find_template(&config, &env.template)?;
+                    let template = envs::find_template(config, &env.template)?;
                     let mut cmd =
-                        envs::shell_command(&config, &dir_of(&name), &template, &template.workdir);
+                        envs::shell_command(config, &dir_of(&name), &template, &template.workdir);
                     if let Err(e) = self.run_suspended(&mut cmd, term)? {
                         self.set_status(format!("could not run {}: {e}", config.docker), true);
                     }
@@ -333,7 +468,10 @@ impl App {
             EnvsAction::Config(name) => {
                 let dir = dir_of(&name);
                 if !envs::is_created(&dir) {
-                    self.set_status(format!("'{name}' isn't created yet"), true);
+                    self.set_status(
+                        format!("'{name}' isn't created yet; press u to start it"),
+                        true,
+                    );
                 } else if self.open_editor(&dir, &dir.join(".env"), true, term)? {
                     self.set_status(
                         format!("saved '{name}' settings; press r to restart it with them"),
@@ -341,9 +479,84 @@ impl App {
                     );
                 }
             }
-            EnvsAction::Create { name, dirs } => self.create_env(&config, &name, dirs, term)?,
+            EnvsAction::Create { name, dirs } => self.create_env(config, &name, dirs, term)?,
+            EnvsAction::SetDirs { env, dirs } => {
+                let value = config::toml_list(&dirs);
+                match config::save_table_value(
+                    &config::path_for(&self.file),
+                    &table(&env),
+                    "dirs",
+                    &value,
+                ) {
+                    Ok(()) => {
+                        self.refresh_envs();
+                        self.set_status(self.apply_hint(&env, "folders saved"), false);
+                    }
+                    Err(e) => self.set_status(format!("could not save folders: {e}"), true),
+                }
+            }
+            EnvsAction::ToggleMount(name) => {
+                let Ok(env) = env_named(&name) else {
+                    return Ok(());
+                };
+                let mount = !env.mount;
+                match config::save_table_value(
+                    &config::path_for(&self.file),
+                    &table(&name),
+                    "mount",
+                    &mount.to_string(),
+                ) {
+                    Ok(()) => {
+                        self.refresh_envs();
+                        let what = if mount {
+                            "projects will be mounted"
+                        } else {
+                            "projects won't be mounted"
+                        };
+                        self.set_status(self.apply_hint(&name, what), false);
+                    }
+                    Err(e) => self.set_status(format!("could not save: {e}"), true),
+                }
+            }
+            EnvsAction::Remove(name) => {
+                let dir = dir_of(&name);
+                if envs::is_created(&dir) {
+                    // `down` without -v: the container goes, the volumes stay.
+                    let cmd = envs::compose(config, &dir, &["down"]);
+                    self.spawn_env_job(
+                        cmd,
+                        format!("removing '{name}'"),
+                        JobKind::EnvRemove { env: name },
+                    );
+                } else {
+                    self.finish_remove(&name);
+                }
+            }
         }
         Ok(())
+    }
+
+    /// "folders saved; press r to restart 'work' with them" (when it runs).
+    fn apply_hint(&self, env: &str, done: &str) -> String {
+        if self.env_status.get(env) == Some(&Status::Running) {
+            format!("{done}; press r to restart '{env}' with them")
+        } else {
+            format!("{done}; they apply when '{env}' starts")
+        }
+    }
+
+    fn finish_remove(&mut self, name: &str) {
+        let config = self.config();
+        match envs::forget(&config, &self.file, name) {
+            Ok(()) => {
+                self.refresh_envs();
+                self.set_status(
+                    format!("removed '{name}'; its volumes are kept (creating '{name}' again reattaches them)"),
+                    false,
+                );
+            }
+            Err(e) => self.set_status(e, true),
+        }
     }
 
     fn create_env(
@@ -377,6 +590,9 @@ impl App {
                     }
                 }
                 self.refresh_envs();
+                // Select the new environment.
+                let index = self.config().envs.iter().position(|e| e.name == name);
+                self.envs_view.list.select(index);
                 self.set_status(
                     format!("created '{name}'; press c to review its settings, u to start it"),
                     false,
@@ -391,7 +607,7 @@ impl App {
     pub(super) fn finish_env_job(&mut self, job: &Job, output: &std::process::Output) {
         let failed = || deps::summarize(&job.program, output).err();
         match &job.kind {
-            JobKind::Env { open, .. } => {
+            JobKind::Env { open } => {
                 if job.cancelled {
                     self.set_status(format!("cancelled {}", job.label), true);
                 } else if let Some(e) = failed() {
@@ -399,8 +615,7 @@ impl App {
                 } else {
                     self.set_status(format!("{}: done", job.label), false);
                     if let Some(url) = open {
-                        let config =
-                            Config::load(&config::path_for(&self.file)).unwrap_or_default();
+                        let config = self.config();
                         self.open_url(&config, url);
                     }
                 }
@@ -413,118 +628,203 @@ impl App {
                 let text = String::from_utf8_lossy(&output.stdout);
                 let lines: Vec<String> = text.lines().map(str::to_string).collect();
                 let scroll = lines.len().saturating_sub(10);
-                if let Mode::Envs(view) = &mut self.mode {
-                    view.logs = Some((env.clone(), lines, scroll));
+                self.envs_view.logs = Some((env.clone(), lines, scroll));
+            }
+            JobKind::EnvRemove { env } => {
+                if job.cancelled {
+                    self.set_status(
+                        format!("cancelled removing '{env}'; nothing was removed"),
+                        true,
+                    );
+                } else if let Some(e) = failed() {
+                    self.set_status(
+                        format!("could not remove the container, so '{env}' was kept: {e}"),
+                        true,
+                    );
+                } else {
+                    self.finish_remove(env);
                 }
             }
             _ => {}
         }
     }
 
-    pub(super) fn draw_envs(&self, f: &mut Frame, view: &EnvsView) {
-        let area = popup(f.area(), 90, f.area().height * 4 / 5);
-        f.render_widget(Clear, area);
-        let block = Block::bordered().title(" Environments ");
-        let inner = block.inner(area);
-        f.render_widget(block, area);
-        let [body, detail, footer] = Layout::vertical([
-            Constraint::Min(0),
-            Constraint::Length(2),
-            Constraint::Length(1),
-        ])
-        .areas(inner);
-        let config = Config::load(&config::path_for(&self.file)).unwrap_or_default();
+    /// The Environments tab: the list on the left, details of the selected one on the right.
+    pub(super) fn draw_envs_tab(&self, f: &mut Frame, area: Rect) {
+        let config = self.config();
+        let view = &self.envs_view;
+        let [list_area, detail_area] = if area.width >= 90 {
+            Layout::horizontal([Constraint::Percentage(40), Constraint::Min(0)]).areas(area)
+        } else {
+            Layout::vertical([Constraint::Percentage(40), Constraint::Min(0)]).areas(area)
+        };
 
-        if let Some((env, lines, scroll)) = &view.logs {
+        let title = format!(" Environments ({}) ", config.envs.len());
+        if config.envs.is_empty() {
+            f.render_widget(
+                Paragraph::new("No environments yet.".dark_gray())
+                    .block(Block::bordered().title(title)),
+                list_area,
+            );
+            let help = vec![
+                Line::from("An environment is a container for a group of projects,"),
+                Line::from("e.g. \"work\" for ~/code/work and \"personal\" for side projects."),
+                Line::from("Each has its own tools, settings and storage."),
+                Line::from(""),
+                Line::from(vec!["Press ".into(), "n".bold(), " to create one.".into()]),
+            ];
+            f.render_widget(
+                Paragraph::new(help)
+                    .wrap(Wrap { trim: true })
+                    .block(Block::bordered().title(" About ")),
+                detail_area,
+            );
+            return;
+        }
+
+        let width = config.envs.iter().map(|e| e.name.len()).max().unwrap_or(0);
+        let items: Vec<ListItem> = config
+            .envs
+            .iter()
+            .map(|env| {
+                let members = self
+                    .project_envs
+                    .values()
+                    .filter(|e| **e == env.name)
+                    .count();
+                ListItem::new(Line::from(vec![
+                    Span::raw(format!("{:<width$}  ", env.name)).bold(),
+                    status_span(self.env_status.get(&env.name), true),
+                    Span::raw(format!(" {members} project(s)")).dark_gray(),
+                ]))
+            })
+            .collect();
+        let list = List::new(items)
+            .block(Block::bordered().title(title))
+            .highlight_style(Style::new().reversed())
+            .highlight_symbol("▶ ");
+        f.render_stateful_widget(list, list_area, &mut view.list.clone());
+
+        let Some(env) = view.selected(&config.envs) else {
+            return;
+        };
+        if let Some((name, lines, scroll)) = &view.logs {
             let text: Vec<Line> = lines
                 .iter()
                 .skip(*scroll)
                 .map(|l| Line::from(l.as_str()))
                 .collect();
             f.render_widget(
-                Paragraph::new(text)
-                    .block(Block::new().title(format!(" logs: {env} (j/k scroll, any key back) "))),
-                body,
+                Paragraph::new(text).block(
+                    Block::bordered().title(format!(" logs: {name} · j/k scroll · any key back ")),
+                ),
+                detail_area,
             );
-        } else if config.envs.is_empty() {
-            f.render_widget(
-                Paragraph::new(
-                    "No environments yet. Press n to create one: a container for a group of \
-                     projects, e.g. \"work\" with ~/code/work.",
-                )
-                .wrap(Wrap { trim: true })
-                .dark_gray(),
-                body,
-            );
-        } else {
-            let width = config.envs.iter().map(|e| e.name.len()).max().unwrap_or(0);
-            let items: Vec<ListItem> = config
-                .envs
-                .iter()
-                .map(|env| {
-                    let status = self.env_status.get(&env.name);
-                    let members = self
-                        .project_envs
-                        .values()
-                        .filter(|e| **e == env.name)
-                        .count();
-                    let dirs = if env.dirs.is_empty() {
-                        "no folders".to_string()
-                    } else {
-                        env.dirs.join(", ")
-                    };
-                    ListItem::new(Line::from(vec![
-                        Span::raw(format!("{:<width$}  ", env.name)).bold(),
-                        status_span(status, true),
-                        Span::raw(format!("  {members} project(s)  ")),
-                        Span::raw(format!("{} · {dirs}", env.template)).dark_gray(),
-                    ]))
-                })
-                .collect();
-            let list = List::new(items)
-                .highlight_style(Style::new().reversed())
-                .highlight_symbol("▶ ");
-            f.render_stateful_widget(list, body, &mut view.list.clone());
-
-            // Links of the selected environment, numbered for 1-9.
-            if let Some(env) = view.list.selected().and_then(|i| config.envs.get(i)) {
-                let links = self.env_links(&config, env, None);
-                let text: Vec<String> = links
-                    .iter()
-                    .enumerate()
-                    .map(|(i, (name, url))| format!("{} {name}: {url}", i + 1))
-                    .collect();
-                let mut lines = vec![Line::from(text.join("   ")).dark_gray()];
-                if let Some(Status::Unknown(why)) = self.env_status.get(&env.name) {
-                    lines.push(Line::from(format!("docker: {why}")).yellow());
-                }
-                f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), detail);
-            }
+            return;
         }
 
+        let label = |s: &str| Span::raw(format!("{s:<10}")).dark_gray();
+        let dir = envs::env_dir(&config, &self.file, &env.name);
+        let mut members: Vec<&str> = self
+            .project_envs
+            .iter()
+            .filter(|(_, e)| **e == env.name)
+            .map(|(p, _)| p.as_str())
+            .collect();
+        members.sort_unstable();
+        let mut lines = vec![
+            Line::from(vec![
+                label("status"),
+                status_span(self.env_status.get(&env.name), true),
+            ]),
+            Line::from(vec![label("template"), Span::raw(env.template.clone())]),
+            Line::from(vec![
+                label("folders"),
+                Span::raw(if env.dirs.is_empty() {
+                    "none yet".to_string()
+                } else {
+                    env.dirs.join(", ")
+                }),
+                "  (d)".dark_gray(),
+            ]),
+            Line::from(vec![
+                label("mount"),
+                Span::raw(if env.mount {
+                    "yes: its projects are mounted"
+                } else {
+                    "no: code lives only inside"
+                }),
+                "  (m)".dark_gray(),
+            ]),
+            Line::from(vec![
+                label("projects"),
+                Span::raw(if members.is_empty() {
+                    "none".to_string()
+                } else {
+                    members.join(", ")
+                }),
+            ]),
+            Line::from(vec![label("files"), Span::raw(tilde(&dir))]),
+        ];
+        let links = self.env_links(&config, env, None);
+        for (i, (name, url)) in links.iter().enumerate() {
+            let head = if i == 0 { label("links") } else { label("") };
+            lines.push(Line::from(vec![
+                head,
+                format!("{} ", i + 1).bold(),
+                Span::raw(format!("{name}  {url}")),
+            ]));
+        }
+        if let Some(Status::Unknown(why)) = self.env_status.get(&env.name) {
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                label("docker"),
+                Span::raw(why.clone()).yellow(),
+            ]));
+        }
+        f.render_widget(
+            Paragraph::new(lines)
+                .wrap(Wrap { trim: false })
+                .block(Block::bordered().title(format!(" {} ", env.name))),
+            detail_area,
+        );
+    }
+
+    /// The footer of the Environments tab: a running job, the line being
+    /// typed, the last message, or the keys.
+    pub(super) fn draw_envs_footer(&self, f: &mut Frame, area: Rect) {
         let line = if let Some(job) = &self.job {
             Line::from(format!(" {}", job.status_line()).yellow())
-        } else if let Some(new) = &view.new {
-            let (label, text) = match new {
-                NewEnv::Name(text) => (" New environment name: ".to_string(), text),
-                NewEnv::Dirs { name, dirs } => (
+        } else if let Some(input) = &self.envs_view.input {
+            let (label, text) = match input {
+                Input::NewName(text) => (" New environment name: ".to_string(), text),
+                Input::NewDirs { name, dirs } => (
                     format!(" Folders for '{name}' (comma-separated, ~ ok, Enter to skip): "),
                     dirs,
                 ),
+                Input::EditDirs { env, dirs } => {
+                    (format!(" Folders for '{env}' (comma-separated): "), dirs)
+                }
+                Input::ConfirmRemove { env, typed } => (
+                    format!(" Remove '{env}' (container and files; volumes stay)? Type '{env}': "),
+                    typed,
+                ),
             };
-            let x = footer.x + (label.chars().count() + text.chars().count()) as u16;
-            f.set_cursor_position((x.min(footer.right().saturating_sub(1)), footer.y));
-            Line::from(vec![label.bold(), Span::raw(text.clone())])
+            let x = area.x + (label.chars().count() + text.chars().count()) as u16;
+            f.set_cursor_position((x.min(area.right().saturating_sub(1)), area.y));
+            let label = if matches!(input, Input::ConfirmRemove { .. }) {
+                label.red().bold()
+            } else {
+                label.bold()
+            };
+            Line::from(vec![label, Span::raw(text.clone())])
         } else if let Some((msg, error)) = &self.status {
             let span = Span::raw(format!(" {msg}"));
             Line::from(if *error { span.red() } else { span.green() })
         } else {
-            Line::from(
-                " u start · s stop · r restart · o/1-9 open · x shell · l logs · c settings · n new · Esc close"
-                    .dark_gray(),
-            )
+            Line::from(fit_hints(usize::from(area.width), HINTS).dark_gray())
         };
-        f.render_widget(line, footer);
+        f.render_widget(line, area);
     }
 }
 

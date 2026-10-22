@@ -13,17 +13,37 @@ impl App {
         ])
         .areas(f.area());
 
+        // " Rattle  Projects  Environments  ~/.rattle/projects.toml", the tab shown highlighted.
+        let tab = |label: &'static str, active: bool| {
+            if active {
+                Span::raw(label).bold().reversed()
+            } else {
+                Span::raw(label).dark_gray()
+            }
+        };
         f.render_widget(
             Line::from(vec![
                 " Rattle ".bold().reversed(),
                 Span::raw(" "),
+                tab(" Projects ", self.tab == Tab::Projects),
+                Span::raw(" "),
+                tab(" Environments ", self.tab == Tab::Envs),
+                Span::raw("  "),
                 Span::raw(self.file.display().to_string()).dark_gray(),
             ]),
             header,
         );
 
-        self.draw_list(f, body);
-        self.draw_footer(f, footer);
+        match self.tab {
+            Tab::Projects => {
+                self.draw_list(f, body);
+                self.draw_footer(f, footer);
+            }
+            Tab::Envs => {
+                self.draw_envs_tab(f, body);
+                self.draw_envs_footer(f, footer);
+            }
+        }
 
         // Keep the help scroll within what fits, so `k` responds right after
         // scrolling past the end.
@@ -60,7 +80,6 @@ impl App {
                 );
             }
             Mode::Deps(view) => draw_deps(f, view, self.job.as_ref().map(|j| j.status_line())),
-            Mode::Envs(view) => self.draw_envs(f, view),
             Mode::Settings(form) => {
                 let area = popup(f.area(), 85, form.height());
                 f.render_widget(Clear, area);
@@ -178,7 +197,10 @@ impl App {
                     .iter()
                     .skip(*scroll)
                     .take(rows)
-                    .map(|(k, d)| Line::from(vec![format!(" {k:<10}").bold(), Span::raw(*d)]))
+                    .map(|(k, d)| match *k {
+                        "" => Line::from(format!(" {d}").cyan().bold()),
+                        _ => Line::from(vec![format!("   {k:<10}").bold(), Span::raw(*d)]),
+                    })
                     .collect();
                 f.render_widget(Clear, area);
                 f.render_widget(
@@ -300,7 +322,7 @@ const FOOTER_HINTS: &[(&str, u8)] = &[
     ("a add", 3),
     ("n new", 3),
     ("p deps", 3),
-    ("v envs", 2),
+    ("Tab envs", 1),
     ("s scan", 2),
     ("e edit", 2),
     (", settings", 3),
@@ -310,7 +332,7 @@ const FOOTER_HINTS: &[(&str, u8)] = &[
 
 /// The most hints that fit in `width` columns: lower-priority ones go first,
 /// the rest keep their order.
-fn fit_hints(width: usize, hints: &[(&str, u8)]) -> String {
+pub(super) fn fit_hints(width: usize, hints: &[(&str, u8)]) -> String {
     let max = hints.iter().map(|(_, p)| *p).max().unwrap_or(0);
     let line = |limit: u8| {
         let shown: Vec<&str> = hints
@@ -358,9 +380,10 @@ mod tests {
             "{full}"
         );
         assert_eq!(
-            fit_hints(40, FOOTER_HINTS),
-            " Enter cd · / filter · ? keys · q quit"
+            fit_hints(50, FOOTER_HINTS),
+            " Enter cd · / filter · Tab envs · ? keys · q quit"
         );
+        assert_eq!(fit_hints(40, FOOTER_HINTS), " Enter cd · ? keys · q quit");
         let essentials = fit_hints(0, FOOTER_HINTS);
         assert_eq!(essentials, " Enter cd · ? keys · q quit", "always shown");
         for width in 0..120 {

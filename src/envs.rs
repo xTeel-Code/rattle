@@ -551,6 +551,22 @@ pub fn prepare_up(
     })
 }
 
+/// Forgets environment `name` once its container is gone: deletes its files
+/// (compose.yaml, .env, …) and its `[envs.<name>]` section. Docker volumes are
+/// not touched, so creating an environment with the same name reattaches them.
+pub fn forget(config: &Config, registry: &Path, name: &str) -> Result<(), String> {
+    // The name builds the folder path below; never act on an odd one.
+    validate_name(name)?;
+    let dir = env_dir(config, registry, name);
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir)
+            .map_err(|e| format!("cannot remove {}: {e}", dir.display()))?;
+    }
+    crate::config::delete_table(&crate::config::path_for(registry), &format!("envs.{name}"))
+        .map_err(|e| format!("cannot update config: {e}"))?;
+    Ok(())
+}
+
 /// Where `project` is inside `env`'s container (its workdir if not mounted).
 pub fn project_folder(
     env: &EnvDef,

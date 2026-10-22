@@ -42,25 +42,37 @@ use job::{Job, JobKind};
 type Term = Terminal<CrosstermBackend<Stderr>>;
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
+/// The `?` key list; entries with an empty key are section headings.
 const KEYS: &[(&str, &str)] = &[
-    ("↑/↓ j/k", "move"),
-    ("g/G", "first / last"),
+    ("", "Both tabs"),
+    ("Tab / v", "switch Projects ↔ Environments"),
+    ("↑/↓ j/k", "move   g/G first / last"),
+    ("?", "toggle this help"),
+    ("q", "quit"),
+    ("", "Projects"),
     ("Enter", "print path & quit (cd \"$(rattle)\")"),
     ("/", "filter"),
     ("a", "add project folder"),
     ("n", "new project from a template"),
     ("p", "dependencies: list, add, remove"),
-    ("v", "dev environments: start, stop, open"),
     ("o", "open project in its environment"),
+    ("e", "open in editor (config, $VISUAL, $EDITOR)"),
     ("d", "delete entry (files are kept)"),
     ("D", "delete entry and folder (delete_files)"),
+    ("X", "remove entries whose folder is gone"),
     ("s", "scan folders from config.toml"),
-    ("e", "open in editor (config, $VISUAL, $EDITOR)"),
     ("c", "edit config.toml (reloads & rescans)"),
     (",", "settings form"),
-    ("X", "remove entries whose folder is gone"),
-    ("?", "toggle this help"),
-    ("q / Esc", "quit"),
+    ("Esc", "clear the filter, else quit"),
+    ("", "Environments"),
+    ("u s r", "start, stop, restart"),
+    ("o 1-9", "open a link (starts it if needed)"),
+    ("x / l", "shell in it / its logs"),
+    ("c", "edit its settings (.env)"),
+    ("n", "new environment"),
+    ("d / m", "change its folders / toggle mounting"),
+    ("D", "remove it (container, files; volumes stay)"),
+    ("Esc", "back to Projects"),
 ];
 
 /// Enter presses this soon after the TUI opens are leftovers from launching it.
@@ -97,8 +109,6 @@ enum Mode {
     Deps(Box<DepsView>),
     /// `,`: the settings form.
     Settings(Box<SettingsForm>),
-    /// `v`: dev environments.
-    Envs(Box<EnvsView>),
     /// `?`: the key list, scrolled by `scroll` rows when it doesn't fit.
     Help {
         scroll: usize,
@@ -124,6 +134,16 @@ struct App {
     env_status: HashMap<String, envs::Status>,
     /// Statuses being read on a background thread (`docker compose ps` is slow).
     env_status_rx: Option<Receiver<Vec<(String, envs::Status)>>>,
+    /// Which tab is shown: Projects or Environments.
+    tab: Tab,
+    /// The Environments tab's state (kept while switching tabs).
+    envs_view: EnvsView,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Tab {
+    Projects,
+    Envs,
 }
 
 pub fn run(file: &Path) -> Result<()> {
@@ -142,6 +162,8 @@ pub fn run(file: &Path) -> Result<()> {
         project_envs: HashMap::new(),
         env_status: HashMap::new(),
         env_status_rx: None,
+        tab: Tab::Projects,
+        envs_view: EnvsView::new(),
     };
     app.refilter();
 
@@ -318,14 +340,6 @@ impl App {
                     self.set_status("cancelled; nothing was deleted", false);
                 }
             }
-            Mode::Envs(view) => {
-                let envs = Config::load(&config::path_for(&self.file))
-                    .map(|c| c.envs)
-                    .unwrap_or_default();
-                let action = view.on_key(key, &envs);
-                self.status = None;
-                self.on_envs_action(action, term)?;
-            }
             Mode::Settings(form) => match form.on_key(key) {
                 FormAction::Nothing => {}
                 FormAction::Close => self.mode = Mode::Normal,
@@ -417,6 +431,7 @@ impl App {
                 }
                 _ => {}
             },
+            Mode::Normal if self.tab == Tab::Envs => self.on_envs_key(key, term)?,
             Mode::Normal => self.on_normal_key(key, term)?,
         }
         Ok(())
@@ -454,9 +469,9 @@ impl App {
                 Err(e) => self.set_status(format!("cannot read config: {e}"), true),
             },
             KeyCode::Char('D') => self.start_delete_files(),
-            KeyCode::Char('v') => {
+            KeyCode::Char('v') | KeyCode::Tab | KeyCode::BackTab => {
                 self.refresh_envs();
-                self.mode = Mode::Envs(Box::new(EnvsView::new()));
+                self.tab = Tab::Envs;
             }
             KeyCode::Char('o') => self.open_project_in_env(),
             KeyCode::Char('p') => {
@@ -566,11 +581,14 @@ impl App {
             return;
         };
         let job = self.job.take().expect("polled job exists");
-        if matches!(job.kind, JobKind::Env { .. } | JobKind::EnvLogs { .. }) {
+        if matches!(
+            job.kind,
+            JobKind::Env { .. } | JobKind::EnvLogs { .. } | JobKind::EnvRemove { .. }
+        ) {
             return self.finish_env_job(&job, &output);
         }
         match job.kind {
-            JobKind::Env { .. } | JobKind::EnvLogs { .. } => {}
+            JobKind::Env { .. } | JobKind::EnvLogs { .. } | JobKind::EnvRemove { .. } => {}
             JobKind::NewProject {
                 name,
                 template,
